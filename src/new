@@ -1,0 +1,230 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "2df57df1-befb-48e9-b45e-b8992f2967b9",
+   "metadata": {},
+   "source": [
+    "## Text-to-SQL Demo"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "c2ecdcb9-aeab-4eae-a128-cce35d5ba13f",
+   "metadata": {},
+   "source": [
+    "#### Import utilities "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 16,
+   "id": "07687895-025d-45d6-bb91-262ab5c72322",
+   "metadata": {
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "[nltk_data] Downloading package words to /home/jupyter/nltk_data...\n",
+      "[nltk_data]   Package words is already up-to-date!\n"
+     ]
+    },
+    {
+     "data": {
+      "text/plain": [
+       "True"
+      ]
+     },
+     "execution_count": 16,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "import warnings\n",
+    "warnings.filterwarnings('ignore')\n",
+    "from ai_utils import *\n",
+    "\n",
+    "from werkzeug.exceptions import HTTPException\n",
+    "from collections import OrderedDict\n",
+    "import json\n",
+    "from datetime import datetime\n",
+    "from pandas.api.types import is_datetime64_any_dtype as is_datetime\n",
+    "\n",
+    "from google.cloud import bigquery\n",
+    "import nltk\n",
+    "from nltk.corpus import words\n",
+    "nltk.download('words')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "id": "85fc1b34-1679-41ce-8b59-c21a7654eb3c",
+   "metadata": {
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "## Create and Load Vector DB\n",
+    "#create_and_save_faiss('tables.jsonl', \"table_name_index\", \"table_details.pkl\")\n",
+    "# create_and_save_faiss('columns_new.jsonl', \"column_name_index\", \"column_details.pkl\")\n",
+    "\n",
+    "table_db, table_docs = load_faiss(\"table_name_index/\", \"table_details.pkl\")\n",
+    "column_db, column_docs = load_faiss(\"column_name_index/\", \"column_details.pkl\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "a0274f7d-4dd8-407b-b893-ef2f67521dc3",
+   "metadata": {},
+   "source": [
+    "#### User query"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 13,
+   "id": "94f1ad97-97b5-4615-a8da-aaa389af814b",
+   "metadata": {
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "## Enter your query here\n",
+    "\n",
+    "query = \"total customer count\""
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "4ff2e7e2-a9ee-4603-8752-742c07d510b5",
+   "metadata": {},
+   "source": [
+    "#### Retrieved Matched Schema "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 14,
+   "id": "d6482cdc-b833-42d2-a48a-4c133da5be39",
+   "metadata": {
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Most relevant schema:-\n",
+      " table_name=cfnameaddrd0|column_name=cid_numb|data_type=int64|description=Unique identification number for the customer\n",
+      "table_name=cfcustdtlsd0|column_name=cid_numb|data_type=int64|description=Unique identification number for the customer\n",
+      "table_name=cfnameaddrd0|column_name=cust_relationship|data_type=int64|description=Customer relationship status\n",
+      "table_name=cfcustdtlsd0|column_name=cust_staf_reltv|data_type=char(1)|description=Customer's staff relationship indicator\n",
+      "table_name=cfcustmastd0|column_name=cm_id|data_type=string|description=Unique identifier for a specific customer manager\n",
+      "table_name=cfcustdtlsd0|column_name=cust_prof_code|data_type=string|description=Customer profile code\n",
+      "table_name=cfnameaddrd0|column_name=cust_name|data_type=string|description=Customer's name\n",
+      "table_name=cfcustmastd0|column_name=cid_numb|data_type=int64|description=Unique identification number for the customer\n",
+      "table_name=cfnameaddrd0|column_name=cust_pri_ph|data_type=string|description=Customer's primary phone number\n",
+      "table_name=cfnameaddrd0|column_name=cust_telex|data_type=string|description=Telex number for customer\n",
+      "table_name=cfcustdtlsd0|column_name=cust_geo_code|data_type=string|description=Customer's geographical code\n",
+      "table_name=cfnameaddrd0|column_name=cust_district|data_type=string|description=District of the customer\n",
+      "table_name=cfnameaddrd0|column_name=cust_nom_perctg|data_type=float64|description=Percentage of customer nomination\n",
+      "table_name=cfcustdtlsd0|column_name=cust_staf_code|data_type=string|description=Customer's staff code\n",
+      "table_name=cfnameaddrd0|column_name=cust_nom_srl_numb|data_type=int64|description=Serial number for customer nomination\n",
+      "table_name=cfnameaddrd0|column_name=cust_ph_1_indc|data_type=string|description=Indicator for customer phone 1\n",
+      "table_name=cfcustdtlsd0|column_name=cust_life_style|data_type=string|description=Customer's lifestyle code\n",
+      "table_name=cfcustdtlsd0|column_name=cust_incom_code|data_type=int64|description=Customer's income code\n",
+      "table_name=cfnameaddrd0|column_name=cust_addr_state|data_type=string|description=customer State address. used for customer address aggregation\n",
+      "table_name=cfnameaddrd0|column_name=cust_ph_1|data_type=string|description=Customer phone 1\n"
+     ]
+    }
+   ],
+   "source": [
+    "relevant_tables = return_tables_matched(query, table_db)\n",
+    "relevant_columns =  return_columns_cleaned(query, column_db)\n",
+    "\n",
+    "# print(\"Most relevant tables\", relevant_tables)\n",
+    "# print(\"Most relevant schema:-\\n\", relevant_columns)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "5664f6d1-ed17-486a-88de-09ed09e4b5d3",
+   "metadata": {},
+   "source": [
+    "#### Generate SQL"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 15,
+   "id": "4a220aa1-8d96-4429-9656-04e90f55bdf1",
+   "metadata": {
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Generated SQL:\n",
+      " SELECT COUNT(DISTINCT cast(cfnameaddrd0.cid_numb as string)) AS total_customer_count FROM cfnameaddrd0 JOIN cfcustdtlsd0 ON cfnameaddrd0.cid_numb = cfcustdtlsd0.cid_numb JOIN cfcustmastd0 ON cfnameaddrd0.cid_numb = cfcustmastd0.cid_numb;\n"
+     ]
+    }
+   ],
+   "source": [
+    "sql =  generate_sql(query, relevant_columns, relevant_tables)\n",
+    "print(\"Generated SQL:\\n\", sql)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "9ae55e3a-9023-470d-be2c-647b2094ce99",
+   "metadata": {
+    "tags": []
+   },
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "196913cf-47f1-4cd5-a75e-6f40447da3eb",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "environment": {
+   "kernel": "conda-base-py",
+   "name": "workbench-notebooks.m123",
+   "type": "gcloud",
+   "uri": "us-docker.pkg.dev/deeplearning-platform-release/gcr.io/workbench-notebooks:m123"
+  },
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "conda-base-py"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.10.14"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}

@@ -1,0 +1,312 @@
+.column-metadata-container {
+  font-family: sans-serif;
+  margin: auto;
+}
+
+.column-panel + .column-panel {
+  margin-top: 1rem;
+}
+
+.main-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: #000000 solid 0.1px;
+}
+
+.main-table-header{
+  background-color: #000000;
+}
+
+.status-table-Tag .table-header {
+  background-color: #000 !important;
+}
+
+.status-table-Tag .table-header th {
+  color: #fff !important;
+}
+
+/* Style for the whole TableHead */
+.main-table-header th {
+  background-color: #000000 !important; /* Black background */
+  color: white !important;             /* White text */
+  font-weight: bold;
+}
+
+.new-query-input {
+  max-width: 74vw;
+  width: 100%;
+}
+
+.sample-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  background-color: #ffff;
+  border: #000  solid 1px;;
+  background-color: #f0efef;
+}
+
+.save-btn-sample-input {
+  margin-left: 10px; 
+  
+}
+
+
+/* Optional: Add padding, border if needed */
+.MuiTableCell-root {
+  color: #000000; /* Default cell text color */
+}
+
+.sample-usage-heading {
+  margin-top: 4vh; /* Remove top margin */
+  margin-bottom: 15px; /* Adjust bottom spacing */
+  margin-left: 0vw;
+}
+
+.domain-specific-context-section {/* Adjust bottom spacing */
+  margin-left: 1.6vw;
+}
+
+.domain-specific-context {
+  margin-top: 2vh;
+  margin-left:-0.1vw;
+  margin-bottom: 4vh;
+  margin-top: 10vh;
+}
+
+.status-table-Tag {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1vw -0.1vw;
+  margin-bottom: 5vh;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-family: 'Segoe UI', sans-serif;
+  
+}
+
+/* Optional: Improve header cell appearance */
+.main-table-header th.MuiTableCell-root {
+  background-color: #000000;
+  color: white;
+  font-size: 16px;
+}
+
+
+
+.column-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  background: #080808;
+  border: 1px solid #ccc;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.column-header .arrow {
+  transition: transform 0.2s ease;
+}
+
+.column-header .arrow.open {
+  transform: rotate(90deg);
+}
+
+.column-body {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.3s ease;
+  border-left: 1px solid #ccc;
+  border-right: 1px solid #ccc;
+  border-bottom: 1px solid #ccc;
+  padding: 0 1rem;
+}
+
+.column-body.expanded {
+  max-height: 2000px; /* big enough to fit content */
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+
+.column-body label,
+.column-body h4 {
+  margin-top: 1rem;
+}
+
+.column-body textarea {
+  width: 100%;
+  height: 60px;
+}
+
+.description-section{
+  margin-left: 1.4rem;
+}
+
+.description-heading{
+  margin-top: 5rem;
+}
+
+.description-textarea {
+  width: 98%;
+  margin-left: vw;
+  min-height: 100px;
+  padding: 10px;
+  font-size: 14px;
+  border-radius: 4px;
+  border: 1px solid #000000;
+  resize: vertical;
+  background-color: #f0efef;
+  padding-left: 5px;
+  color: #000000;
+}
+.checkbox-row {
+  display: flex;
+  gap: 2rem;
+  margin-top: 3rem;
+  margin-left: 3.5vw;
+}
+
+.tag-section {
+  margin-top: 1rem;
+}
+
+.tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.tag-item {
+  background: #e0e0e0;
+  padding: 0.3rem 0.6rem;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tag-item button {
+  margin-left: 0.3rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.tags-input-group {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.tags-input-group input {
+  flex: 1;
+  padding: 0.4rem;
+}
+
+.sample-query-section {
+  margin-top: 1rem;
+}
+
+.query-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.query-list li {
+  background: #fafafa;
+  margin: 0.2rem 0;
+  padding: 0.4rem;
+}
+
+.add-query {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.add-query input {
+  flex: 1;
+  padding: 0.4rem;
+}
+
+.save-btn {
+  margin-top: 1rem;
+  padding: 0.6rem 1rem;
+  background: #6c72e8;
+  color: white;
+  border: none;
+  cursor: pointer;
+}
+
+.save-btn:disabled {
+  background: #aaa;
+  cursor: not-allowed;
+}
+
+/* General styles for the checkbox section */
+.checkbox-section {
+  display: flex;
+  flex-direction: column; /* Stack heading and checkboxes vertically */
+  gap: 16px; /* Add spacing between the heading and checkboxes */
+}
+
+/* Styles for the heading */
+.checkbox-description-heading {
+  font-weight: bold;
+  margin: 0; /* Remove default margin for better control */
+  margin-left: 1.5vw;
+  margin-top: 4vh;
+  margin-bottom: 1vh;
+}
+
+/* Container for the checkboxes */
+.checkbox-container {
+  display: flex;
+  justify-content: flex-start; /* Align checkboxes horizontally */
+  align-items: center; /* Vertically center the checkboxes */
+  width: 30vw;
+  gap: 3vh;
+  margin-left: 1.5vw;
+}
+
+/* Styles for each checkbox label */
+.checkbox-container label {
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid #ccc; /* Add a border around the checkbox container */
+  border-radius: 4px; /* Add rounded corners */
+  width: calc(50% - 10px); /* Ensure equal width for both checkboxes */
+}
+
+/* Checkbox input styling */
+.checkbox-container input[type="checkbox"] {
+  margin-right: 8px; /* Space between checkbox and label text */
+  accent-color: #007bff; /* Change the color of the checkbox when checked */
+}
+
+/* Optional: Style the text inside the labels */
+.checkbox-container label span {
+  font-size: 14px;
+  font-weight: normal;
+  color: #333;
+}
+.audit-history-section {
+  margin-top: 1rem;
+  margin-left: 1.5rem;
+  width: 96.2%;
+}
+
+.audit-history {
+  margin-top: 1rem;
+}
+
+.audit-history table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.audit-history th,
+.audit-history td {
+  border: 1px solid #ccc;
+  padding: 0.4rem;
+}

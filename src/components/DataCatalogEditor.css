@@ -1,0 +1,817 @@
+.header {
+  color: #000000;
+  padding: 0px;
+  text-align: start;
+}
+.tabs-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin-top: 10vh;
+  margin-left: 1vw;
+  padding: 0px;
+  font-family: 'Segoe UI', sans-serif;
+  width: 100%;
+  box-sizing: border-box;
+}
+.top-buttons {
+  display: flex;
+  justify-content: flex-end; /* Align buttons to the right */
+  gap: 10px; /* Add spacing between buttons */
+  margin-bottom: 20px; /* Optional: Add some space below the buttons */
+  margin-top: 20px;
+  margin-right: 20px;
+}
+.top-save-btn,
+.top-reset-btn {
+  padding: 8px 20px;
+  font-size: 15px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+.top-save-btn {
+  background-color: #6c72e8; /* Red color for Save button */
+  color: white;
+}
+.top-save-btn:hover {
+  background-color: #373dc6; /* Hover effect for Save button */
+}
+.top-reset-btn {
+  background-color: #333; /* Dark gray/black for Reset button */
+  color: white;
+}
+.top-reset-btn:hover {
+  background-color: #555; /* Hover effect for Reset button */
+}
+.tabs {
+  display: flex;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  position: relative;
+  left: 0;
+}
+.tab {
+  padding: 12px 24px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.3s ease;
+  background-color: #bbbbbb;
+  border-radius: 0;
+  color: #000;
+  white-space: nowrap;
+  margin: 0;
+}
+.tab:hover {
+  background: #434343;
+  color: #fff;
+}
+.tab.active {
+  background: #6c72e8;
+  border-bottom: 2px solid #6c72e8;
+  font-weight: bold;
+  color: #fff;
+}
+.tab-content {
+  position: absolute;
+  left: 0;
+  width: 98%;
+  padding: 10px;
+  border: 1px solid #000000;
+  border-top: none;
+  margin-top: -1px;
+  color: #000000;
+  border-radius: 0 0 4px 4px;
+  background-color: #ffffff;
+  box-sizing: border-box;
+  min-height: 200px;
+  text-align: left;
+}
+.dropdown-pair {
+  display: flex;
+  gap: 16px;
+}
+.dropdown-pair > div {
+  flex: 1;
+}
+.market-dropdown {
+  width: 50%;
+}
+
+
+.select-container {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin: 20px 0;
+  padding: 10px;
+  border-radius: 4px;
+}
+.description-textarea {
+  width: 100%; /* Full width */
+  min-height: 150px; /* Adjust height as needed */
+  padding: 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background-color: #f0efef;
+  resize: vertical; /* Allow vertical resizing */
+  margin-left: 0.5vw;
+}
+.select-heading {
+  margin: 0;
+  font-size: 1rem;
+  color: #161616;
+}
+.status-dropdown {
+  padding: 8px 12px;
+  border: 1px solid #000000;
+  border-radius: 4px;
+  background-color: rgb(255, 255, 255);
+  font-size: 0.9rem;
+  min-width: 200px;
+  color: #000000;
+}
+.status-dropdown:focus {
+  outline: none;
+  border-color: #000000;
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+}
+.status-table {
+  width: 97%;
+  border-collapse: collapse;
+  margin: 20px 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-family: 'Segoe UI', sans-serif;
+}
+.Commonly-Table {
+  width: 48%;
+  border-collapse: collapse;
+  margin: 10px 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-family: 'Segoe UI', sans-serif;
+  border: #000 solid 0.1px;
+  background-color: #f0efef;
+}
+.table-header {
+  background-color: #090909;
+  color: white;
+  border: 1px solid #000000;
+  height: 40px; /* Increase the height */
+  padding: 0 20px; /* Add padding to create space on the left and right */
+  display: flex;
+  align-items: center; 
+}
+.table-header-Enum{
+  background-color: #090909;
+  color: white;
+  border: 1px solid #000000;
+  height: 40px;
+  display: flexbox;
+  align-items: center; 
+  justify-content: flex-end;
+}
+.table-header-Enum th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 1.2em;
+  padding: 0 10px;
+}
+.table-header th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 1em;
+}
+.status-table th,
+.status-table td {
+  padding: 4px 10px;
+  font-size: 0.9em;
+  line-height: 1.2;
+  border: 1px solid #000000;
+}
+.status-table tr {
+  height: 2px;
+}
+.status-table .table-header {
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.table-row {
+  border-bottom: 1px solid #dddddd;
+  background-color: #dbdbdb;
+}
+.status-table td {
+  padding: 12px 20px;
+  color: #0d0d0d;
+}
+.status-table td:first-child {
+  font-weight: 500;
+  color: #212529;
+}
+/* Tags Section */
+.tags-section {
+  padding: 0px 0px 0px;
+  width: 100%;
+  border-collapse: collapse;
+  margin-left: 1vw;
+}
+.tags-section h2 {
+  margin: 10px 0;
+  padding: 0px 2px 1px;
+  font-size: 18px;
+}
+.InputSection {
+  border: 0.1px solid #000000;
+  padding: 20px 20px 0 20px;
+  background: #f0f0f0;
+  margin: 0px 0;
+}
+.add-button,
+.event-button,
+.add-tag-btn,
+.add-btn,
+.save-btn,
+.edit-btn {
+  background-color: #9c7679;
+  color: white;
+  border: none;
+  padding: 9px 25px;
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin-left: 0.1vw;
+  transition: background-color 0.3s ease;
+}
+.edit-btn-sample {
+  background-color: #6c72e8;
+  color: white;
+  border: none;
+  padding: 4px 5px;
+  margin-right: 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+}
+.delete-btn-sample {
+  background-color: #000000;
+  color: white;
+  border: none;
+  padding: 4px 5px;
+  margin-right: 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+}
+ .save-btn-sample {
+  background-color: #007bff;
+  color: white;
+  border: none;
+  padding: 4px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+  align-items: center;
+}
+.edit-btn:hover {
+  background-color: #0056b3;
+}
+.delete-btn, .remove-btn {
+  background-color: #000000;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.delete-btn:hover {
+  background-color: #c82333;
+}
+.add-button:hover,
+.event-button:hover,
+.add-tag-btn:hover,
+.add-btn:hover,
+.save-btn:hover,
+.edit-btn:hover {
+  background-color: #6c72e8;
+}
+.add-tag-btn {
+  background: #6c72e8;
+}
+.add-tag-btn:hover {
+  background: #6c72e8;
+}
+.tags-input-group {
+  display: flex;
+  gap: 15px;
+  margin: 15px 0;
+  width: 40%;
+  align-items: center;
+}
+.tag-input {
+  flex: 1;
+  padding: 10px 15px;
+  border: 2px solid #000000;
+  border-radius: 3px;
+  font-size: 14px;
+  background-color: #fff;
+  color: #000000;
+}
+.tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 1rem;
+}
+.tag-item {
+  background: #ffffff;
+  color: rgb(0, 0, 0);
+  padding: 8px 15px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  border: #000 1px solid;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.remove-tag {
+  background: none;
+  border: none;
+  color: rgb(0, 0, 0);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+}
+.remove-tag:hover {
+  color: #e74c3c;
+}
+.dual-sections-container {
+  display: flex;
+  gap: 0px;
+  padding: 3px;
+  max-width: 100vw;
+  margin: 0 auto;
+  align-items: flex-start;
+}
+.section-box {
+  flex: 1;
+  border: 1px solid #ddd;
+  padding: 20px;
+  background: #f0efef;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  text-align: left;
+}
+.section-box h2 {
+  font-size: 18px;
+  margin-top: 0;
+  margin-bottom: 16px;
+  text-align: left;
+}
+.section1 {
+  border-color: #080808;
+}
+.section2 {
+  border-color: #2196F3;
+}
+.input-group {
+  margin-bottom: 15px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.input-group-commonly-used {
+  margin-bottom: 15px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.input-group-enum {
+  display: flex;
+  gap: 8px; /* Space between elements */
+  align-items: center; /* Vertically center items */
+  margin-top: 16px;
+  margin-left: 1.5vw;
+  margin-bottom: 5vh;
+  max-width: 100%;
+}
+/* Value Input (narrower) */
+/* Narrow input (Value) */
+.form-control1 {
+  flex: 0 0 27%;
+  padding: 10px;
+  border: 1px solid #000000;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: #fff;
+  color: #000000;
+  margin-right: 8px;
+}
+.input-group select {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  background: #fff;
+  font-size: 0.875rem;
+  margin: 1vw;
+}
+.select-dropdown {
+  color: rgb(0, 0, 0);
+}
+/* Wide input (Description) */
+.form-control2 {
+  flex: 0 0 56.8%; 
+  padding: 10px;
+  border: 1px solid #000000;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: #fff;
+  color: #000000;
+}
+/* Save Button */
+.enum-input-group button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  background-color: #6c72e8;
+  color: white;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+.enum-input-group button:hover {
+  background-color: #6c72e8;
+}
+.input-group input {
+  flex: 1;
+  padding: 10px;
+  border: 1px solid #000000;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: #fff;
+  color: #000000;
+}
+.add-btn {
+  background-color: #6c72e8;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 14px;
+  white-space: nowrap;
+  padding: 6px 12px;
+  height: auto;
+  margin-right: 1.5vh;
+}
+.section2 .add-btn {
+  background-color: #2196F3;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: #000000 solid 1px;
+  font-size: 14px;
+  background-color: #ffffff;
+  color: #222121;
+  font-weight: 600;
+}
+.remove-btn {
+  background: none;
+  border: none;
+  margin-left: 6px;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+  color: inherit;
+}
+.remove-btn:hover {
+  color: #d32f2f;
+}
+.header {
+  padding-bottom: 10px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.2);
+  position: relative;
+}
+.header::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0.2), rgba(0,0,0,0));
+}
+.sample-usage-container {
+  width: 96%;
+  margin-top: 10px;
+  margin-left: 1vw;
+  /* border: 1px solid #000; */
+  padding: 10px;
+  /* background-color: #f0efef; */
+  border-radius: 2px;
+}
+.sample-usage-heading {
+  margin-top: 0; /* Remove top margin */
+  margin-bottom: 15px; /* Adjust bottom spacing */
+}
+.sample-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  background-color: #ffff;
+  border: #000  solid 1px;;
+  background-color: #f0efef;
+}
+.sample-usage-table th,
+.sample-usage-table td {
+  border: 1px solid #000;
+  padding: 8px;
+  text-align: left;
+  background-color: #f8f8f8;
+}
+.sample-usage-table th {
+  background-color: #000;
+  color: white;
+  font-weight: bold;
+}
+.editable-query {
+  width: 99%;
+  height: 80px;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid #000000;
+  border-radius: 4px;
+  font-size: 14px;
+  color: #000000;
+  background-color: #fff;
+}
+.edit-btn {
+  background-color: #6c72e8;
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 14px;
+}
+.edit-btn:hover {
+  background-color: #6c72e8;
+}
+.add-query-section {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  margin-left: 1vw;
+  width: 120%;
+  padding: 1px;
+  border-radius: 2px;
+}
+.add-query-section input{
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  margin-bottom: 10px;
+  width: 110%;
+  border-radius: 2px;
+}
+.save-btn-sample-input {
+background-color: #6c72e8;
+color: white;
+padding: 10px 50px;
+border-radius: 4px;
+font-size: 14px;
+}
+.new-query-input {
+  flex: 1;
+  padding: 10px;
+  height: 40px;
+  width: 10vw;
+  border: 1px solid #000;
+  border-radius: 5px;
+  font-size: 14px;
+  margin-right: 0px; /* Creates 5px space before Save button */
+  background-color: #fff;
+  color: #000000;
+  box-sizing: border-box;
+}
+.save-btn {
+  background-color: #000000;
+  color: white;
+  border: none;
+  padding: 15px 160px;
+  margin-left: 2px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 14px;
+}
+.save-btn:hover {
+  background-color: #6c72e8;
+}
+.audit-history-section {
+  margin-top: 0vh;
+  padding: 1px;
+  width: 100%;
+}
+.custom-divider {
+  border: none;
+  height: 0.4px;
+  background-color: #000; /* black divider */
+  margin-top: 20px;
+}
+.audit-history-table {
+  width: 104%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  background-color: #f0efef;
+  margin-left: -1.7vw;
+}
+.audit-history-table th,
+.audit-history-table td {
+  border: 1px solid #000;
+  padding: 8px;
+  text-align: left;
+  background-color: #f0efef;
+} 
+.section-title {
+  margin-left : 10px; /* Remove top margin */
+  margin-bottom: 15px; /* Adjust bottom spacing */
+}
+.audit-history-table th {
+  background-color: #000000;
+  color: white;
+  font-weight: bold;
+}
+.curved-section {
+  background-color: #ffffff; /* Optional: white or light background */
+  border-radius: 12px; /* Adjust for more/less curve */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); /* Optional shadow for better separation */
+  margin: 16px 16px 50px 16px; /* Add some spacing above/below */
+  overflow: hidden; /* Ensures inner content doesn't go outside rounded corners */
+  border: 1px solid #ddd; /* Optional subtle border */
+}
+/* Column Meta Data Methods and Variables */
+/* General Styles */
+.curved-section {
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.dropdown-section {
+  margin-bottom: 10vh;
+  margin-left: 1vw;
+  margin-right: 2vw;
+}
+.dropdown-section h2{
+ font-size: 20px;
+}
+.edit-existing-columns {
+  margin-bottom: 20px;
+  margin-left: 2vw;
+}
+.edit-table {
+  width: 95%;
+  border-collapse: collapse;
+  border: 1px solid #ccc;
+  margin-left: 0vw;
+}
+.edit-table th,
+.edit-table td {
+  padding: 10px;
+  border: 1px solid #ccc;
+  text-align: left;
+}
+.edit-table th {
+  background-color: #000000;
+  color: white;
+}
+.edit-table th.col-name,
+.edit-table td:nth-child(1) {
+  width: 30%;
+}
+.edit-table th.col-type,
+.edit-table td:nth-child(2) {
+  width: 15%;
+}
+.edit-table th.col-action,
+.edit-table td:nth-child(3) {
+  width: 10%;
+}
+.column-input {
+  width: 97%;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background-color: white;
+  color: black;
+}
+.data-type-dropdown {
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  width: 70%;
+  background-color: rgb(255, 255, 255);
+  color: black;
+}
+.save-btn-edit {
+  padding: 5px 10px;
+  margin-left: 0.1vw;
+  background-color: #161414;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+.save-btn {
+  padding: 8px 16px;
+  background-color: #161414;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+.save-btn:hover {
+  background-color: #6c72e8;
+}
+.add-row-section {
+  display: flex;
+  justify-content: flex-start; /* Aligns button to the left */
+  margin-top: 20px;
+}
+.add-row-btn {
+  padding: 8px 16px;
+  background-color: #000000;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  margin-left: 73vw;
+  margin-bottom: 20px;
+}
+.add-row-btn:hover {
+  background-color: #6c72e8;
+}
+.status-table td:nth-child(1) {
+  width: 30%; 
+}
+.status-table td:nth-child(2) {
+  width: 60%; 
+}
+
+.description-section {
+  margin-top: 40px;
+}
+.domain-specific-context {
+  margin-top: 2vh;
+  margin-left: 2vw;
+  margin-bottom: 4vh;;
+}
+.checkbox-row {
+  display: flex;
+  gap: 20px; /* space between checkboxes */
+  margin-bottom: 16px;
+  margin-top: 3vh;
+  margin-left: 2vw;
+}
+.status-table-Tag {
+  width: 97% !important;
+  border-collapse: collapse;
+  margin: 1vw -0.1vw;
+  margin-bottom: 5vh;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  font-family: 'Segoe UI', sans-serif;
+  margin-left: 1vw !important;
+}
+
+.metadata-section {
+  margin-top: 4vh;
+  margin-left: 1vw;
+  margin-bottom: 4vh;
+}
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #ccc;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: #e7e7e7;
+}
