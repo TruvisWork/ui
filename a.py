@@ -97,101 +97,27 @@ def calculate_cost(bytes_processed):
     return cost_usd
 
 def extract_table_name(sql_text):
-    """Enhanced table name extraction from SQL query"""
+    """
+    Extracts the table name from SQL queries of the form:
+    ... FROM `{project_id}`.`{region}`.INFORMATION_SCHEMA.VIEWS ...
+    Returns the last part after INFORMATION_SCHEMA. (e.g., VIEWS, TABLES, etc.)
+    """
     try:
-        # Remove comments and normalize whitespace
-        sql_text = re.sub(r'--.*?\n', ' ', sql_text)
-        sql_text = re.sub(r'/\*.*?\*/', ' ', sql_text, flags=re.DOTALL)
-        sql_text = re.sub(r'\s+', ' ', sql_text.strip())
-        
-        # Priority 1: Extract from INFORMATION_SCHEMA queries
-        info_schema_patterns = [
-            r'INFORMATION_SCHEMA\.(\w+)',
-            r'information_schema\.(\w+)',
-            r'INFORMATION_SCHEMA\.`(\w+)`',
-            r'information_schema\.`(\w+)`'
-        ]
-        
-        for pattern in info_schema_patterns:
-            match = re.search(pattern, sql_text, re.IGNORECASE)
-            if match:
-                table_name = match.group(1).upper()
-                # Handle common INFORMATION_SCHEMA table mappings
-                if table_name in ['TABLES', 'TABLE_OPTIONS']:
-                    return 'TABLES_METADATA'
-                elif table_name in ['COLUMNS', 'COLUMN_FIELD_PATHS']:
-                    return 'COLUMNS_METADATA'
-                elif table_name in ['PARTITIONS']:
-                    return 'PARTITIONS_METADATA'
-                elif table_name in ['SCHEMATA']:
-                    return 'SCHEMATA_METADATA'
-                elif table_name in ['VIEWS']:
-                    return 'VIEWS_METADATA'
-                elif table_name in ['ROUTINES']:
-                    return 'ROUTINES_METADATA'
-                elif table_name in ['TABLE_CONSTRAINTS']:
-                    return 'CONSTRAINTS_METADATA'
-                else:
-                    return f'{table_name}_METADATA'
-        
-        # Priority 2: Extract from __TABLES__ queries
-        if '__TABLES__' in sql_text.upper():
-            return 'TABLES_CATALOG'
-        
-        # Priority 3: Extract from regular FROM clauses
-        from_patterns = [
-            r'FROM\s+`([^`]+)`',  # FROM `project.dataset.table`
-            r'FROM\s+([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',  # FROM project.dataset.table
-            r'FROM\s+([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',  # FROM dataset.table
-            r'FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)'  # FROM table
-        ]
-        
-        for pattern in from_patterns:
-            match = re.search(pattern, sql_text, re.IGNORECASE)
-            if match:
-                full_name = match.group(1)
-                # Extract just the table name (last part)
-                table_name = full_name.split('.')[-1]
-                return table_name.upper()
-        
-        # Priority 4: Extract from JOIN clauses
-        join_patterns = [
-            r'JOIN\s+`([^`]+)`',
-            r'JOIN\s+([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',
-            r'JOIN\s+([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',
-            r'JOIN\s+([a-zA-Z_][a-zA-Z0-9_]*)'
-        ]
-        
-        for pattern in join_patterns:
-            match = re.search(pattern, sql_text, re.IGNORECASE)
-            if match:
-                full_name = match.group(1)
-                table_name = full_name.split('.')[-1]
-                return table_name.upper()
-        
-        # Priority 5: Look for table-like keywords in the query
-        keyword_patterns = [
-            r'CREATE\s+TABLE\s+([a-zA-Z_][a-zA-Z0-9_]*)',
-            r'INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)',
-            r'UPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)',
-            r'DELETE\s+FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)'
-        ]
-        
-        for pattern in keyword_patterns:
-            match = re.search(pattern, sql_text, re.IGNORECASE)
-            if match:
-                return match.group(1).upper()
-        
-        # Fallback: Try to identify query type from content
-        if 'INFORMATION_SCHEMA' in sql_text.upper():
-            return 'INFORMATION_SCHEMA_QUERY'
-        elif '__TABLES__' in sql_text.upper():
-            return 'TABLES_CATALOG_QUERY'
-        elif 'SELECT' in sql_text.upper():
-            return 'SELECT_QUERY'
-        
-        return 'UNKNOWN_TABLE'
-        
+        match = re.search(
+            r"FROM\s+`?(?:[\w-]+)`?\.`?(?:[\w-]+)`?\.INFORMATION_SCHEMA\.([\w]+)",
+            sql_text,
+            re.IGNORECASE
+        )
+        if match:
+            return match.group(1)
+        match = re.search(
+            r"FROM\s+`?(?:[\w-]+\.){1,2}([\w-]+)`?",
+            sql_text,
+            re.IGNORECASE
+        )
+        if match:
+            return match.group(1).lstrip("__")
+        return "unknown_table_name"
     except Exception as e:
         logging.error(f"Error extracting table name from SQL: {e}")
         logging.debug(f"SQL text: {sql_text[:200]}...")
