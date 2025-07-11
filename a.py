@@ -9,6 +9,7 @@ import traceback
 import configparser
 import yaml
 import pandas as pd
+import json
 
 def load_config():
     parser = argparse.ArgumentParser()
@@ -75,62 +76,129 @@ def setup_logging(verbose):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=level)
 
-def create_cross_region_queries():
-    """Create queries that work across regions using explicit project.region syntax"""
-    return {
-        'query1': """
-            SELECT catalog_name, schema_name, schema_owner, creation_time, last_modified_time, location 
-            FROM `{target_project_id}`.{target_region}.INFORMATION_SCHEMA.SCHEMATA
-        """,
-        'query2': """
-            SELECT creation_time, a.project_id, project_number, user_email, job_id, job_type, parent_job_id, 
-                   session_info, statement_type, start_time, end_time, query, state, reservation_id, 
-                   total_bytes_processed, a.total_slot_ms, total_modified_partitions, total_bytes_billed, 
-                   error_result.reason AS error_result_reason, 
-                   error_result.location AS error_result_location, 
-                   error_result.debug_info AS error_result_debug_info, 
-                   error_result.message AS error_result_message, 
-                   cache_hit, 
-                   destination_table.project_id AS destination_project_id, 
-                   destination_table.dataset_id AS destination_dataset_id, 
-                   destination_table.table_id AS destination_table_id, 
-                   referenced_tables, labels, timeline, job_stages 
-            FROM `{target_project_id}`.{target_region}.INFORMATION_SCHEMA.JOBS_BY_PROJECT AS a 
-            WHERE creation_time > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 DAY)
-        """,
-        'query3': """
-            SELECT SPECIFIC_CATALOG, SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_CATALOG, ROUTINE_SCHEMA, 
-                   ROUTINE_NAME, ROUTINE_TYPE, DATA_TYPE, ROUTINE_BODY, ROUTINE_DEFINITION,
-                   EXTERNAL_LANGUAGE, IS_DETERMINISTIC, SECURITY_TYPE, CREATED, LAST_ALTERED, DDL 
-            FROM `{target_project_id}`.{target_region}.INFORMATION_SCHEMA.ROUTINES
-        """,
-        'query4': """
-            SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, IS_NULLABLE, 
-                   DATA_TYPE, IS_GENERATED, GENERATION_EXPRESSION, IS_STORED, IS_HIDDEN, IS_UPDATABLE, 
-                   IS_SYSTEM_DEFINED, IS_PARTITIONING_COLUMN, CLUSTERING_ORDINAL_POSITION 
-            FROM `{target_project_id}`.{target_region}.INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = '{dataset}'
-        """,
-        'query5': """
-            SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, VIEW_DEFINITION, CHECK_OPTION, USE_STANDARD_SQL 
-            FROM `{target_project_id}`.{target_region}.INFORMATION_SCHEMA.VIEWS
-            WHERE TABLE_SCHEMA = '{dataset}'
-        """,
-        'query6': """
-            SELECT project_id, dataset_id, table_id, creation_time, last_modified_time, 
-                   row_count, size_bytes, type 
-            FROM `{target_project_id}`.{dataset}.__TABLES__
-        """,
-        'query7': """
-            SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, IS_INSERTABLE_INTO, IS_TYPED, 
-                   CREATION_TIME, DDL 
-            FROM `{target_project_id}`.{target_region}.INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_SCHEMA = '{dataset}'
-        """
-    }
+def load_queries(filepath):
+    try:
+        with open(filepath, 'r') as file:
+            return yaml.safe_load(file)
+    except yaml.YAMLError as e:
+        logging.error(f"Error loading queries from {filepath}: {e}")
+        raise ValueError(f"Invalid YAML file: {filepath}")
 
-def run_query_with_temp_dataset(job_client, target_client, query, temp_location, job_project_id):
-    """Run cross-region query using temporary dataset approach"""
+def calculate_cost(bytes_processed):
+    """
+    Calculate BigQuery cost based on bytes processed
+    On-demand pricing: $5 per TB (as of 2024)
+    """
+    if bytes_processed is None or bytes_processed == 0:
+        return 0
+    
+    tb_processed = bytes_processed / (1024**4)  # Convert bytes to TB
+    cost_usd = tb_processed * 5  # $5 per TB
+    return cost_usd
+
+def extract_table_name(sql_text):
+    """Enhanced table name extraction from SQL query"""
+    try:
+        # Remove comments and normalize whitespace
+        sql_text = re.sub(r'--.*?\n', ' ', sql_text)
+        sql_text = re.sub(r'/\*.*?\*/', ' ', sql_text, flags=re.DOTALL)
+        sql_text = re.sub(r'\s+', ' ', sql_text.strip())
+        
+        # Priority 1: Extract from INFORMATION_SCHEMA queries
+        info_schema_patterns = [
+            r'INFORMATION_SCHEMA\.(\w+)',
+            r'information_schema\.(\w+)',
+            r'INFORMATION_SCHEMA\.`(\w+)`',
+            r'information_schema\.`(\w+)`'
+        ]
+        
+        for pattern in info_schema_patterns:
+            match = re.search(pattern, sql_text, re.IGNORECASE)
+            if match:
+                table_name = match.group(1).upper()
+                # Handle common INFORMATION_SCHEMA table mappings
+                if table_name in ['TABLES', 'TABLE_OPTIONS']:
+                    return 'TABLES_METADATA'
+                elif table_name in ['COLUMNS', 'COLUMN_FIELD_PATHS']:
+                    return 'COLUMNS_METADATA'
+                elif table_name in ['PARTITIONS']:
+                    return 'PARTITIONS_METADATA'
+                elif table_name in ['SCHEMATA']:
+                    return 'SCHEMATA_METADATA'
+                elif table_name in ['VIEWS']:
+                    return 'VIEWS_METADATA'
+                elif table_name in ['ROUTINES']:
+                    return 'ROUTINES_METADATA'
+                elif table_name in ['TABLE_CONSTRAINTS']:
+                    return 'CONSTRAINTS_METADATA'
+                else:
+                    return f'{table_name}_METADATA'
+        
+        # Priority 2: Extract from __TABLES__ queries
+        if '__TABLES__' in sql_text.upper():
+            return 'TABLES_CATALOG'
+        
+        # Priority 3: Extract from regular FROM clauses
+        from_patterns = [
+            r'FROM\s+`([^`]+)`',  # FROM `project.dataset.table`
+            r'FROM\s+([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',  # FROM project.dataset.table
+            r'FROM\s+([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',  # FROM dataset.table
+            r'FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)'  # FROM table
+        ]
+        
+        for pattern in from_patterns:
+            match = re.search(pattern, sql_text, re.IGNORECASE)
+            if match:
+                full_name = match.group(1)
+                # Extract just the table name (last part)
+                table_name = full_name.split('.')[-1]
+                return table_name.upper()
+        
+        # Priority 4: Extract from JOIN clauses
+        join_patterns = [
+            r'JOIN\s+`([^`]+)`',
+            r'JOIN\s+([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',
+            r'JOIN\s+([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)',
+            r'JOIN\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        ]
+        
+        for pattern in join_patterns:
+            match = re.search(pattern, sql_text, re.IGNORECASE)
+            if match:
+                full_name = match.group(1)
+                table_name = full_name.split('.')[-1]
+                return table_name.upper()
+        
+        # Priority 5: Look for table-like keywords in the query
+        keyword_patterns = [
+            r'CREATE\s+TABLE\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            r'INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            r'UPDATE\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            r'DELETE\s+FROM\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+        ]
+        
+        for pattern in keyword_patterns:
+            match = re.search(pattern, sql_text, re.IGNORECASE)
+            if match:
+                return match.group(1).upper()
+        
+        # Fallback: Try to identify query type from content
+        if 'INFORMATION_SCHEMA' in sql_text.upper():
+            return 'INFORMATION_SCHEMA_QUERY'
+        elif '__TABLES__' in sql_text.upper():
+            return 'TABLES_CATALOG_QUERY'
+        elif 'SELECT' in sql_text.upper():
+            return 'SELECT_QUERY'
+        
+        return 'UNKNOWN_TABLE'
+        
+    except Exception as e:
+        logging.error(f"Error extracting table name from SQL: {e}")
+        logging.debug(f"SQL text: {sql_text[:200]}...")
+        return 'UNKNOWN_TABLE'
+
+def run_query_with_temp_dataset(job_client, target_client, query, temp_location, job_project_id, table_name="unknown"):
+    """Run cross-region query using temporary dataset approach with cost logging"""
     try:
         # For cross-region queries, we'll create a job in a multi-region location
         job_config = bigquery.QueryJobConfig()
@@ -145,24 +213,116 @@ def run_query_with_temp_dataset(job_client, target_client, query, temp_location,
         # Convert to DataFrame
         df = result.to_dataframe()
         
-        return df
+        # Get job statistics for cost calculation
+        job_stats = query_job._properties.get('statistics', {})
+        query_stats = job_stats.get('query', {})
+        
+        # Extract cost-related information
+        bytes_processed = query_stats.get('totalBytesProcessed')
+        bytes_billed = query_stats.get('totalBytesBilled')
+        slot_ms = query_stats.get('totalSlotMs')
+        cache_hit = query_stats.get('cacheHit', False)
+        
+        # Calculate cost
+        cost = calculate_cost(int(bytes_processed)) if bytes_processed else 0
+        
+        # Create cost information dictionary
+        cost_info = {
+            'timestamp': datetime.now().isoformat(),
+            'table_name': table_name,
+            'bytes_processed': int(bytes_processed) if bytes_processed else 0,
+            'estimated_cost_usd': round(cost, 6)
+        }
+        
+        # Log the cost information
+        logging.info(f"Query for {table_name} completed:")
+        logging.info(f"  - Bytes processed: {cost_info['bytes_processed']:,}")
+        logging.info(f"  - Estimated cost: ${cost_info['estimated_cost_usd']:.6f}")
+        
+        return df, cost_info
+        
     except Exception as e:
         logging.error(f"Error running cross-region query: {e}")
         
         # If cross-region fails, try running from target region
         try:
             logging.info("Attempting to run query from target region...")
-            return target_client.query(query).to_dataframe()
+            query_job = target_client.query(query)
+            result = query_job.result()
+            df = result.to_dataframe()
+            
+            # Get job statistics for cost calculation
+            job_stats = query_job._properties.get('statistics', {})
+            query_stats = job_stats.get('query', {})
+            
+            # Extract cost-related information
+            bytes_processed = query_stats.get('totalBytesProcessed')
+            bytes_billed = query_stats.get('totalBytesBilled')
+            slot_ms = query_stats.get('totalSlotMs')
+            cache_hit = query_stats.get('cacheHit', False)
+            
+            # Calculate cost
+            cost = calculate_cost(int(bytes_processed)) if bytes_processed else 0
+            
+            # Create cost information dictionary
+            cost_info = {
+                'timestamp': datetime.now().isoformat(),
+                'table_name': table_name,
+                'bytes_processed': int(bytes_processed) if bytes_processed else 0,
+                'estimated_cost_usd': round(cost, 6)
+            }
+            
+            return df, cost_info
+            
         except Exception as e2:
             logging.error(f"Error running query from target region: {e2}")
             raise
 
-def run_query(client, query):
-    """Standard query execution"""
+def run_query(client, query, table_name="unknown"):
+    """Standard query execution with cost logging"""
     try:
-        return client.query(query).to_dataframe()
+        # Configure job to get detailed statistics
+        job_config = bigquery.QueryJobConfig(
+            use_query_cache=False,  # Set to True if you want to use cache
+            dry_run=False
+        )
+        
+        # Execute the query
+        query_job = client.query(query, job_config=job_config)
+        
+        # Get the results
+        df = query_job.to_dataframe()
+        
+        # Get job statistics
+        job_stats = query_job._properties.get('statistics', {})
+        query_stats = job_stats.get('query', {})
+        
+        # Extract cost-related information
+        bytes_processed = query_stats.get('totalBytesProcessed')
+        bytes_billed = query_stats.get('totalBytesBilled')
+        slot_ms = query_stats.get('totalSlotMs')
+        cache_hit = query_stats.get('cacheHit', False)
+        
+        # Calculate cost
+        cost = calculate_cost(int(bytes_processed)) if bytes_processed else 0
+        
+        # Create cost information dictionary
+        cost_info = {
+            'timestamp': datetime.now().isoformat(),
+            'table_name': table_name,
+            'bytes_processed': int(bytes_processed) if bytes_processed else 0,
+            'estimated_cost_usd': round(cost, 6)
+        }
+        
+        # Log the cost information
+        logging.info(f"Query for {table_name} completed:")
+        logging.info(f"  - Bytes processed: {cost_info['bytes_processed']:,}")
+        logging.info(f"  - Estimated cost: ${cost_info['estimated_cost_usd']:.6f}")
+        
+        return df, cost_info
+        
     except Exception as e:
-        logging.error(f"Error running query: {e}")
+        logging.error(f"Error running query for {table_name}: {e}")
         raise
 
 def save_to_parquet(df, output_dir, project_id, region, dataset, name):
@@ -180,22 +340,83 @@ def save_to_parquet(df, output_dir, project_id, region, dataset, name):
         logging.error(f"Error saving to parquet: {e}")
         raise
 
-def extract_table_name(sql_text):
+def save_cost_log(cost_data, output_dir):
+    """Save cost information to JSON file with table names"""
     try:
-        # Try to extract table name from FROM clause
-        match = re.search(r"FROM\s+`?([\w\-\.]+\.){0,2}([\w\-]+)`?", sql_text, re.IGNORECASE)
-        if match:
-            return match.group(2)
+        os.makedirs(output_dir, exist_ok=True)
         
-        # Try to extract from INFORMATION_SCHEMA
-        match = re.search(r"INFORMATION_SCHEMA\.(\w+)", sql_text, re.IGNORECASE)
-        if match:
-            return match.group(1).lower()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        return "unknown_table"
+        # Save as JSON with table names
+        json_filepath = os.path.join(output_dir, f"cost_by_table_{timestamp}.json")
+        
+        # Group by table name and aggregate costs
+        table_costs = {}
+        
+        for cost_info in cost_data:
+            table_name = cost_info['table_name']
+            if table_name not in table_costs:
+                table_costs[table_name] = {
+                    'table_name': table_name,
+                    'total_bytes_processed': 0,
+                    'total_estimated_cost_usd': 0,
+                    'query_count': 0,
+                    'executions': []
+                }
+            
+            table_costs[table_name]['total_bytes_processed'] += cost_info['bytes_processed']
+            table_costs[table_name]['total_estimated_cost_usd'] += cost_info['estimated_cost_usd']
+            table_costs[table_name]['query_count'] += 1
+            table_costs[table_name]['executions'].append({
+                'timestamp': cost_info['timestamp'],
+                'bytes_processed': cost_info['bytes_processed'],
+                'estimated_cost_usd': cost_info['estimated_cost_usd']
+            })
+        
+        # Round the totals
+        for table_name in table_costs:
+            table_costs[table_name]['total_estimated_cost_usd'] = round(
+                table_costs[table_name]['total_estimated_cost_usd'], 6
+            )
+        
+        # Convert to list and sort by cost (descending)
+        cost_summary = list(table_costs.values())
+        cost_summary.sort(key=lambda x: x['total_estimated_cost_usd'], reverse=True)
+        
+        # Create the final structure
+        output_data = {
+            'summary': {
+                'timestamp': datetime.now().isoformat(),
+                'total_tables': len(cost_summary),
+                'total_queries': sum(table['query_count'] for table in cost_summary),
+                'total_bytes_processed': sum(table['total_bytes_processed'] for table in cost_summary),
+                'total_estimated_cost_usd': round(sum(table['total_estimated_cost_usd'] for table in cost_summary), 6)
+            },
+            'cost_by_table': cost_summary
+        }
+        
+        with open(json_filepath, 'w') as f:
+            json.dump(output_data, f, indent=2)
+        
+        logging.info(f"Cost information saved to: {json_filepath}")
+        
+        return json_filepath
+        
     except Exception as e:
-        logging.error(f"Error extracting table name from SQL: {e}")
-        return "unknown_table"
+        logging.error(f"Error saving cost log: {e}")
+        raise
+
+def format_query_for_cross_region(query, target_project_id, target_region, dataset_id=None):
+    """Format query for cross-region execution"""
+    # Replace region placeholder with full project.region syntax
+    formatted_query = query.replace('{region}', f'`{target_project_id}`.{target_region}')
+    
+    # Replace project_id and dataset placeholders
+    formatted_query = formatted_query.replace('{project_id}', target_project_id)
+    if dataset_id:
+        formatted_query = formatted_query.replace('{dataset}', dataset_id)
+    
+    return formatted_query
 
 def main():
     (job_client, target_client, job_project_id, job_region, target_project_id, 
@@ -206,56 +427,77 @@ def main():
     logging.info(f"Extracting data from: {target_project_id} in {target_region}")
     logging.info(f"Target datasets: {target_datasets}")
 
-    queries = create_cross_region_queries()
+    # Load queries from YAML file
+    queries = load_queries(os.path.abspath(os.path.join(os.path.dirname(__file__), "queries.yaml")))
+
+    # Initialize cost tracking
+    all_cost_data = []
+    total_cost = 0
 
     for name, query in queries.items():
         try:
             logging.info(f"Processing query: {name}")
             
+            # Extract table name from query for better identification
+            table_name = extract_table_name(query)
+            
             if name == "query6":
                 # Handle __TABLES__ query for each dataset
                 all_tables_df = []
+                query_cost_data = []
+                
                 for dataset_id in target_datasets:
                     logging.info(f"Processing dataset: {dataset_id}")
-                    formatted_query = query.format(
-                        target_project_id=target_project_id,
-                        dataset=dataset_id
-                    )
+                    formatted_query = format_query_for_cross_region(query, target_project_id, target_region, dataset_id)
                     logging.debug(f"Query: {formatted_query}")
                     
+                    # Create specific table name for this dataset
+                    dataset_table_name = f"{table_name}_{dataset_id}"
+                    
                     # Use target client for __TABLES__ as it's dataset-specific
-                    df = run_query(target_client, formatted_query)
+                    df, cost_info = run_query(target_client, formatted_query, dataset_table_name)
                     all_tables_df.append(df)
+                    query_cost_data.append(cost_info)
+                    all_cost_data.append(cost_info)
                 
                 if all_tables_df:
                     combined_df = pd.concat(all_tables_df, ignore_index=True)
-                    table_name = extract_table_name(formatted_query)
                     filepath = save_to_parquet(
                         combined_df, output_dir, target_project_id, 
                         target_region, 'ALL_DATASETS', table_name
                     )
+                    
+                    # Calculate total cost for this query across all datasets
+                    query_total_cost = sum(cost['estimated_cost_usd'] for cost in query_cost_data)
+                    total_cost += query_total_cost
+                    
                     logging.info(f"Successfully saved {len(combined_df)} rows to: {filepath}")
+                    logging.info(f"File size: {os.path.getsize(filepath) / (1024 * 1024):.2f} MB")
+                    logging.info(f"Total cost for {table_name}: ${query_total_cost:.6f}")
                 else:
-                    logging.warning("No __TABLES__ data found")
+                    logging.warning(f"No {table_name} data found")
             
             elif name in ["query4", "query5", "query7"]:
                 # Handle dataset-specific INFORMATION_SCHEMA queries
                 for dataset_id in target_datasets:
                     logging.info(f"Processing dataset: {dataset_id}")
-                    formatted_query = query.format(
-                        target_project_id=target_project_id,
-                        target_region=target_region,
-                        dataset=dataset_id
-                    )
+                    formatted_query = format_query_for_cross_region(query, target_project_id, target_region, dataset_id)
+                    # Add WHERE clause for dataset-specific queries
+                    if "WHERE" not in formatted_query.upper():
+                        formatted_query += f" WHERE TABLE_SCHEMA = '{dataset_id}'"
                     logging.debug(f"Query: {formatted_query}")
                     
+                    # Create specific table name for this dataset
+                    dataset_table_name = f"{table_name}_{dataset_id}"
+                    
                     # Try cross-region query first, fallback to target region
-                    df = run_query_with_temp_dataset(
-                        job_client, target_client, formatted_query, temp_location, job_project_id
+                    df, cost_info = run_query_with_temp_dataset(
+                        job_client, target_client, formatted_query, temp_location, job_project_id, dataset_table_name
                     )
+                    all_cost_data.append(cost_info)
+                    total_cost += cost_info['estimated_cost_usd']
                     
                     if not df.empty:
-                        table_name = extract_table_name(formatted_query)
                         filepath = save_to_parquet(
                             df, output_dir, target_project_id, 
                             target_region, dataset_id, table_name
@@ -263,23 +505,21 @@ def main():
                         logging.info(f"Successfully saved {len(df)} rows to: {filepath}")
                         logging.info(f"File size: {os.path.getsize(filepath) / (1024 * 1024):.2f} MB")
                     else:
-                        logging.warning(f"No data found for {name} in dataset {dataset_id}")
+                        logging.warning(f"No data found for {table_name} in dataset {dataset_id}")
             
             else:
                 # Handle project-wide INFORMATION_SCHEMA queries
-                formatted_query = query.format(
-                    target_project_id=target_project_id,
-                    target_region=target_region
-                )
+                formatted_query = format_query_for_cross_region(query, target_project_id, target_region)
                 logging.debug(f"Query: {formatted_query}")
                 
                 # Try cross-region query first, fallback to target region
-                df = run_query_with_temp_dataset(
-                    job_client, target_client, formatted_query, temp_location, job_project_id
+                df, cost_info = run_query_with_temp_dataset(
+                    job_client, target_client, formatted_query, temp_location, job_project_id, table_name
                 )
+                all_cost_data.append(cost_info)
+                total_cost += cost_info['estimated_cost_usd']
                 
                 if not df.empty:
-                    table_name = extract_table_name(formatted_query)
                     filepath = save_to_parquet(
                         df, output_dir, target_project_id, 
                         target_region, 'PROJECT_WIDE', table_name
@@ -287,11 +527,37 @@ def main():
                     logging.info(f"Successfully saved {len(df)} rows to: {filepath}")
                     logging.info(f"File size: {os.path.getsize(filepath) / (1024 * 1024):.2f} MB")
                 else:
-                    logging.warning(f"No data found for {name}")
+                    logging.warning(f"No data found for {table_name}")
 
         except Exception as e:
             logging.error(f"Error processing {name}: {str(e)}")
             traceback.print_exc()
+
+    # Save cost information
+    if all_cost_data:
+        save_cost_log(all_cost_data, output_dir)
+        
+        # Print cost summary
+        logging.info("\n" + "="*50)
+        logging.info("COST SUMMARY")
+        logging.info("="*50)
+        logging.info(f"Total queries executed: {len(all_cost_data)}")
+        logging.info(f"Total estimated cost: ${total_cost:.6f}")
+        logging.info("\nCost by table:")
+        
+        # Group costs by table name for summary
+        table_summary = {}
+        for cost_info in all_cost_data:
+            table_name = cost_info['table_name']
+            if table_name not in table_summary:
+                table_summary[table_name] = 0
+            table_summary[table_name] += cost_info['estimated_cost_usd']
+        
+        # Sort by cost (descending)
+        sorted_tables = sorted(table_summary.items(), key=lambda x: x[1], reverse=True)
+        for table_name, cost in sorted_tables:
+            logging.info(f"  {table_name}: ${cost:.6f}")
+        logging.info("="*50)
 
 if __name__ == "__main__":
     main()
