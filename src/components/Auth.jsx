@@ -152,31 +152,26 @@ const Auth = () => {
           'Authorization': `Basic ${credentials}`,
           'Content-Type': 'application/json'
         },
-        // No body needed - using Basic Auth only
       });
 
       if (!response.ok) {
         // Handle different error status codes
         let errorMessage = 'Login failed';
         
-        try {
-          const error = await response.json();
-          errorMessage = error.detail || errorMessage;
-        } catch (jsonError) {
-          // If response is not JSON, use status-based messages
-          if (response.status === 401) {
-            errorMessage = 'Invalid username or password.';
-          } else if (response.status >= 500) {
-            errorMessage = 'Server error. Please try again later.';
-          } else if (response.status === 0 || !navigator.onLine) {
-            errorMessage = 'Network Error: Could not connect to server.';
+        if (response.status === 401) {
+          errorMessage = 'Invalid username or password.';
+        } else if (response.status >= 500) {
+          errorMessage = 'Server error. Please try again later.';
+        } else {
+          try {
+            const error = await response.json();
+            errorMessage = error.detail || errorMessage;
+          } catch (jsonError) {
+            // Keep the default message if JSON parsing fails
           }
         }
         
-        // Create a custom error with the server message
-        const customError = new Error(errorMessage);
-        customError.isHttpError = true;
-        throw customError;
+        throw new Error(errorMessage);
       }
 
       const result = await response.json();
@@ -199,14 +194,13 @@ const Auth = () => {
     } catch (err) {
       console.error('Login error:', err);
       
-      // Only show generic network error for actual network failures (not HTTP errors)
-      let displayMessage = err.message;
-      
-      if (!err.isHttpError && (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError')) {
-        displayMessage = 'Network Error: Could not connect to server. Please check your connection and try again.';
+      // Check if it's a network error (not an HTTP response error)
+      if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
+        showMessage('Network Error: Could not connect to server. Please check your connection and try again.', 'error');
+      } else {
+        // For HTTP errors, show the specific error message
+        showMessage(err.message, 'error');
       }
-      
-      showMessage(displayMessage, 'error');
     } finally {
       setIsLoading(false);
     }
@@ -227,27 +221,25 @@ const Auth = () => {
           'Authorization': `Basic ${credentials}`,
           'Content-Type': 'application/json'
         },
-        // No body needed - using Basic Auth only
       });
 
       if (!response.ok) {
         let errorMessage = 'Password verification failed';
         
-        try {
-          const error = await response.json();
-          errorMessage = error.detail || errorMessage;
-        } catch (jsonError) {
-          if (response.status === 401) {
-            errorMessage = 'Incorrect password.';
-          } else if (response.status >= 500) {
-            errorMessage = 'Server error. Please try again later.';
+        if (response.status === 401) {
+          errorMessage = 'Incorrect password.';
+        } else if (response.status >= 500) {
+          errorMessage = 'Server error. Please try again later.';
+        } else {
+          try {
+            const error = await response.json();
+            errorMessage = error.detail || errorMessage;
+          } catch (jsonError) {
+            // Keep the default message if JSON parsing fails
           }
         }
         
-        // Create a custom error with the server message
-        const customError = new Error(errorMessage);
-        customError.isHttpError = true;
-        throw customError;
+        throw new Error(errorMessage);
       }
 
       const result = await response.json();
@@ -268,14 +260,13 @@ const Auth = () => {
     } catch (err) {
       console.error('Password verification error:', err);
       
-      // Only show generic network error for actual network failures (not HTTP errors)
-      let displayMessage = err.message;
-      
-      if (!err.isHttpError && (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError')) {
-        displayMessage = 'Network Error: Could not connect to server. Please check your connection and try again.';
+      // Check if it's a network error (not an HTTP response error)
+      if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
+        showMessage('Network Error: Could not connect to server. Please check your connection and try again.', 'error');
+      } else {
+        // For HTTP errors, show the specific error message
+        showMessage(err.message, 'error');
       }
-      
-      showMessage(displayMessage, 'error');
     } finally {
       setIsLoading(false);
     }
@@ -307,12 +298,13 @@ const Auth = () => {
     } catch (err) {
       console.error('Forgot password error:', err);
       
-      let displayMessage = err.message;
-      if (err.message.includes('Failed to fetch') || err.name === 'TypeError') {
-        displayMessage = 'Network error. Please check your connection and try again.';
+      // Check if it's a network error (not an HTTP response error)
+      if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
+        showMessage('Network Error: Could not connect to server. Please check your connection and try again.', 'error');
+      } else {
+        // For HTTP errors, show the specific error message
+        showMessage(err.message, 'error');
       }
-      
-      showMessage(displayMessage, 'error');
     } finally {
       setIsLoading(false);
     }
