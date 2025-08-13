@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import './Auth.css';
-import axios from 'axios';
 
 const Auth = () => {
   const [step, setStep] = useState('login');
@@ -24,15 +23,9 @@ const Auth = () => {
 
   // API configuration constants
   const API_BASE_URL = 'http://localhost:8000';
-  const API_CONFIG = {
-    credentials: 'include', // Always include cookies
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  };
 
-  // Internal API request handler
-  const makeApiRequest = async (endpoint, options = {}) => {
+  // Internal API request handler with retry mechanism
+  const makeApiRequest = async (endpoint, options = {}, maxRetries = 2) => {
     const config = {
       credentials: 'include',
       ...options,
@@ -42,13 +35,29 @@ const Auth = () => {
       },
     };
 
-    try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
-      return response;
-    } catch (error) {
-      console.error(`API request failed for ${endpoint}:`, error);
-      throw error;
+    let lastError;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
+        return response;
+      } catch (error) {
+        lastError = error;
+        console.error(`API request failed for ${endpoint} (attempt ${attempt + 1}):`, error);
+        
+        // Only retry on network errors, not HTTP errors
+        if (attempt < maxRetries && (error.name === 'TypeError' || error.message.includes('Failed to fetch'))) {
+          console.log(`Retrying request (attempt ${attempt + 2}/${maxRetries + 1})...`);
+          // Progressive delay: 1s, 2s, 3s...
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+          continue;
+        }
+        
+        throw error;
+      }
     }
+
+    throw lastError;
   };
 
   useEffect(() => {
@@ -61,15 +70,14 @@ const Auth = () => {
 
       if (response.status === 401) {
         sessionStorage.clear();
-        navigate('/login');
         return;
       }
 
       if (response.ok) {
         const userData = await response.json();
         if (userData.authenticated) {
-          
           sessionStorage.setItem('username', userData.username);
+          
           // User is authenticated, check if they want to change market
           const changeMarketRequest = sessionStorage.getItem('changeMarketRequest');
           
@@ -95,11 +103,11 @@ const Auth = () => {
       } else {
         if (response.status === 401) {
           sessionStorage.clear();
-          navigate('/login');
         }
       }
     } catch (error) {
       console.error('Error checking auth status', error);
+      // Don't show error message on initial auth check
     }
   };
 
@@ -134,6 +142,7 @@ const Auth = () => {
 
     try {
       sessionStorage.setItem('selectedMarket', '');
+      
       // Create Basic Auth header
       const credentials = btoa(`${username}:${password}`);
       
@@ -143,13 +152,28 @@ const Auth = () => {
           'Authorization': `Basic ${credentials}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(), // FIX: Add an empty body to the request
-      });  //added the username, password to the body or else it sends empty body
+        // No body needed - using Basic Auth only
+      });
 
       if (!response.ok) {
-        // FIX: Gracefully handle non-JSON error responses
-        const error = await response.json().catch(() => ({ detail: 'Invalid username or password.' }));
-        throw new Error(error.detail || 'Login failed');
+        // Handle different error status codes
+        let errorMessage = 'Login failed';
+        
+        try {
+          const error = await response.json();
+          errorMessage = error.detail || errorMessage;
+        } catch (jsonError) {
+          // If response is not JSON, use status-based messages
+          if (response.status === 401) {
+            errorMessage = 'Invalid username or password.';
+          } else if (response.status >= 500) {
+            errorMessage = 'Server error. Please try again later.';
+          } else if (response.status === 0 || !navigator.onLine) {
+            errorMessage = 'Network Error: Could not connect to server.';
+          }
+        }
+        
+        throw new Error(errorMessage);
       }
 
       const result = await response.json();
@@ -170,10 +194,15 @@ const Auth = () => {
         throw new Error('No access to any markets. Contact admin.');
       }
     } catch (err) {
-      // FIX: Provide a more helpful network error message
-      const displayMessage = err.message.includes('Failed to fetch')
-        ? 'Network Error: Could not connect to server.'
-        : err.message;
+      console.error('Login error:', err);
+      
+      // Better error handling with network detection
+      let displayMessage = err.message;
+      
+      if (err.message.includes('Failed to fetch') || err.name === 'TypeError') {
+        displayMessage = 'Network Error: Could not connect to server. Please check your connection and try again.';
+      }
+      
       showMessage(displayMessage, 'error');
     } finally {
       setIsLoading(false);
@@ -195,13 +224,24 @@ const Auth = () => {
           'Authorization': `Basic ${credentials}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({}), // FIX: Add an empty body to the request
+        // No body needed - using Basic Auth only
       });
 
       if (!response.ok) {
-        // FIX: Gracefully handle non-JSON error responses
-        const error = await response.json().catch(() => ({ detail: 'Incorrect password.' }));
-        throw new Error(error.detail || 'Password verification failed');
+        let errorMessage = 'Password verification failed';
+        
+        try {
+          const error = await response.json();
+          errorMessage = error.detail || errorMessage;
+        } catch (jsonError) {
+          if (response.status === 401) {
+            errorMessage = 'Incorrect password.';
+          } else if (response.status >= 500) {
+            errorMessage = 'Server error. Please try again later.';
+          }
+        }
+        
+        throw new Error(errorMessage);
       }
 
       const result = await response.json();
@@ -220,9 +260,13 @@ const Auth = () => {
       setStep('market-select');
       setVerificationPassword('');
     } catch (err) {
-      const displayMessage = err.message.includes('Failed to fetch')
-        ? 'Network Error: Could not connect to server.'
-        : err.message;
+      console.error('Password verification error:', err);
+      
+      let displayMessage = err.message;
+      if (err.message.includes('Failed to fetch') || err.name === 'TypeError') {
+        displayMessage = 'Network Error: Could not connect to server. Please check your connection and try again.';
+      }
+      
       showMessage(displayMessage, 'error');
     } finally {
       setIsLoading(false);
@@ -241,7 +285,7 @@ const Auth = () => {
       });
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({ detail: 'Failed to send reset link' }));
         throw new Error(error.detail || 'Failed to send reset link');
       }
 
@@ -253,7 +297,14 @@ const Auth = () => {
         setResetIdentifier('');
       }, 3000);
     } catch (err) {
-      showMessage(err.message || 'Network error. Please try again.', 'error');
+      console.error('Forgot password error:', err);
+      
+      let displayMessage = err.message;
+      if (err.message.includes('Failed to fetch') || err.name === 'TypeError') {
+        displayMessage = 'Network error. Please check your connection and try again.';
+      }
+      
+      showMessage(displayMessage, 'error');
     } finally {
       setIsLoading(false);
     }
@@ -272,18 +323,6 @@ const Auth = () => {
   const handleCancelMarketChange = () => {
     navigate('/');
   };
-
-  async function login(credentials) {
-    try {
-      return await axios.post('/api/login', credentials);
-    } catch (err) {
-      if (err.message === "Network Error") {
-        await new Promise(res => setTimeout(res, 500));
-        return axios.post('/api/login', credentials);
-      }
-      throw err;
-    }
-  }
 
   return (
     <div className="auth-page">
@@ -319,8 +358,10 @@ const Auth = () => {
                     id="login-username"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
+                    placeholder="Enter your username"
                     required
                     disabled={isLoading}
+                    autoComplete="username"
                   />
                 </div>
 
@@ -332,8 +373,10 @@ const Auth = () => {
                       id="login-password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Enter your password"
                       required
                       disabled={isLoading}
+                      autoComplete="current-password"
                     />
                     <button
                       type="button"
@@ -411,6 +454,7 @@ const Auth = () => {
                       placeholder="Enter your password"
                       required
                       disabled={isLoading}
+                      autoComplete="current-password"
                     />
                     <button
                       type="button"
@@ -546,6 +590,7 @@ const Auth = () => {
                     placeholder="Enter your username or email address"
                     required
                     disabled={isLoading}
+                    autoComplete="username"
                   />
                 </div>
 
