@@ -52,7 +52,7 @@
   .form-group label {
     display: block;
     margin-bottom: 8px;
-    color: #ffffff;
+    color: #333333; /* Fixed: Changed from white to dark gray */
     font-weight: 500;
     font-size: 0.9rem;
   }
@@ -66,7 +66,11 @@
     transition: all 0.3s ease;
     background: #fafbfc;
     box-sizing: border-box;
-    color: #fff;
+    color: #333333; /* Fixed: Changed from white to dark gray */
+  }
+  
+  .form-group input::placeholder {
+    color: #999999; /* Added placeholder color */
   }
   
   .form-group input:focus {
@@ -242,6 +246,7 @@
     background: #fafbfc;
     text-align: center;
     transition: all 0.3s ease;
+    color: #333333; /* Added explicit color */
   }
   
   .market-option:hover {
@@ -285,43 +290,41 @@
  /* Dark Mode Styles */
 @media (prefers-color-scheme: dark) {
     .auth-page {
-      background: #ffffff; /* Pure black background */
+      background: #1a1a1a; /* Fixed: Changed from white to dark */
     }
     
     .auth-container {
-      background: #ffffff; /* Pure black container */
-      border: 2px solid #ffffff; /* Subtle dark border */
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5); /* Stronger shadow for depth */
+      background: #2a2a2a; /* Fixed: Changed from white to dark gray */
+      border: 2px solid #404040; /* Fixed: Changed from white to dark gray */
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
     }
   
     .auth-header {
-      background: linear-gradient(135deg, #DB1110, #e63130); /* Keep red gradient */
+      background: linear-gradient(135deg, #DB1110, #e63130);
     }
   
-    /* Keep existing text/input styles but adjust for pure black */
     .form-group label {
-      color: #000000;
+      color: #ffffff; /* White text on dark background */
     }
     
     .form-group input {
-      background: #ffffff; /* Slightly lighter than container */
-      border-color: #000000;
-      color: #000000;
+      background: #3a3a3a; /* Dark background */
+      border-color: #505050;
+      color: #ffffff; /* White text on dark background */
+    }
+    
+    .form-group input::placeholder {
+      color: #aaaaaa; /* Light gray placeholder */
     }
     
     .form-group input:focus {
-      background: #ffffff;
+      background: #404040;
       border-color: #DB1110;
       box-shadow: 0 0 0 3px rgba(219, 17, 16, 0.2);
     }
-  
-    
-    .form-group input::placeholder {
-      color: #000000;
-    }
 
     .password-toggle {
-      color: #000000;
+      color: #aaaaaa;
     }
 
     .password-toggle:hover,
@@ -351,21 +354,21 @@
     }
     
     .market-selection-section h3 {
-      color: #000000;
+      color: #ffffff;
     }
     
     .market-description {
-      color: #000000;
+      color: #cccccc;
     }
     
     .market-option {
-      background: #ffffff;
-      border-color: #000000;
-      color: #000000;
+      background: #3a3a3a;
+      border-color: #505050;
+      color: #ffffff;
     }
     
     .market-option:hover {
-      background: #333;
+      background: #404040;
       border-color: #DB1110;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     }
