@@ -173,7 +173,10 @@ const Auth = () => {
           }
         }
         
-        throw new Error(errorMessage);
+        // Create a custom error with the server message
+        const customError = new Error(errorMessage);
+        customError.isHttpError = true;
+        throw customError;
       }
 
       const result = await response.json();
@@ -196,10 +199,10 @@ const Auth = () => {
     } catch (err) {
       console.error('Login error:', err);
       
-      // Better error handling with network detection
+      // Only show generic network error for actual network failures (not HTTP errors)
       let displayMessage = err.message;
       
-      if (err.message.includes('Failed to fetch') || err.name === 'TypeError') {
+      if (!err.isHttpError && (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError')) {
         displayMessage = 'Network Error: Could not connect to server. Please check your connection and try again.';
       }
       
@@ -241,7 +244,10 @@ const Auth = () => {
           }
         }
         
-        throw new Error(errorMessage);
+        // Create a custom error with the server message
+        const customError = new Error(errorMessage);
+        customError.isHttpError = true;
+        throw customError;
       }
 
       const result = await response.json();
@@ -262,8 +268,10 @@ const Auth = () => {
     } catch (err) {
       console.error('Password verification error:', err);
       
+      // Only show generic network error for actual network failures (not HTTP errors)
       let displayMessage = err.message;
-      if (err.message.includes('Failed to fetch') || err.name === 'TypeError') {
+      
+      if (!err.isHttpError && (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError')) {
         displayMessage = 'Network Error: Could not connect to server. Please check your connection and try again.';
       }
       
