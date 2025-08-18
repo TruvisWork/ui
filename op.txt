@@ -1,0 +1,29 @@
+package com.calcite_new.sql.parser.bigquery.operators;
+
+import org.apache.calcite.sql.SqlBinaryOperator;
+import org.apache.calcite.sql.SqlCall;
+import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlWriter;
+import org.apache.calcite.sql.type.InferTypes;
+import org.apache.calcite.sql.type.ReturnTypes;
+import org.apache.calcite.sql.type.OperandTypes;
+
+public class NotEqualsOverrideOperator extends SqlBinaryOperator {
+
+    public static final NotEqualsOverrideOperator INSTANCE = new NotEqualsOverrideOperator();
+
+    private NotEqualsOverrideOperator() {
+        super("!=", SqlKind.NOT_EQUALS, 30, true,
+                ReturnTypes.BOOLEAN, InferTypes.BOOLEAN, OperandTypes.COMPARABLE_ORDERED);
+    }
+
+    @Override
+    public void unparse(SqlWriter writer, SqlCall call, int leftPrec, int rightPrec) {
+        SqlWriter.Frame frame = writer.startList("", "");
+        call.operand(0).unparse(writer, leftPrec, getLeftPrec());
+        writer.sep("!=");
+        call.operand(1).unparse(writer, getRightPrec(), rightPrec);
+        writer.endList(frame);
+    }
+}
+
