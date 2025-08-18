@@ -46,7 +46,7 @@ public class EntityQualifier {
       int idx = supportedQualificationLevels - i - 1;
       actualQualifiers.push(createId(defaultQualifiers.get(idx)));
     }
-//    actualQualifiers.push(createId(dialect.product.name()));
+    actualQualifiers.push(createId(dialect.product.name()));
     return actualQualifiers.stream().toList();
   }
 
