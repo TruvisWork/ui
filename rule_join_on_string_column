@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS rule_join_on_string_column;
+
+CREATE TABLE rule_join_on_string_column AS
+SELECT DISTINCT
+    12 as rule_id,
+    'hsbc' as org_id,
+    target_database as project_name,
+    join_condition,
+    log_id,
+    query
+FROM base_query_info
+WHERE has_join_on_string_column = TRUE;
