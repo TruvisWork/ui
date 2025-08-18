@@ -6,4 +6,5 @@ package com.calcite_new.core.model.entity;
 public enum EntityKind {
   TABLE,
   VIEW,
+  EXTERNAL_TABLE
 }

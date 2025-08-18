@@ -30,6 +30,8 @@ public class EntityCatalog extends AbstractSchema {
     Identifier entityId = qualifiedName.get(qualifiedName.size() - 1);
     DatabaseEntity table = namespace.getTable(entityId);
     if (table != null) return table;
+    DatabaseEntity extTable = namespace.getExternalTable(entityId);
+    if (extTable != null) return extTable;
     DatabaseEntity view = namespace.getView(entityId);
     if (view != null) return view;
     return null;
@@ -40,6 +42,8 @@ public class EntityCatalog extends AbstractSchema {
     Namespace ns = getOrAddNamespace(namespace);
     if (entity.getKind() == EntityKind.TABLE) {
       ns.addTable((Table) entity);
+    } else if (entity.getKind() == EntityKind.EXTERNAL_TABLE) {
+      ns.addExternalTable((com.calcite_new.core.model.entity.ExternalTable) entity);
     } else if (entity.getKind() == EntityKind.VIEW) {
       ns.addView((View) entity);
     } else {

@@ -40,7 +40,6 @@ public class DataType {
   }
 
   public static DataType create(SqlTypeName name, int precision, int scale, boolean nullable) {
-    assert name.allowsPrec() && name.allowsScale() : "Expected DataType with precision and scale";
     return new DataType(name, precision, scale, nullable);
   }
 
@@ -49,7 +48,6 @@ public class DataType {
   }
 
   public static DataType create(SqlTypeName name, int precision, boolean nullable) {
-    assert name.allowsPrec() && !name.allowsScale() : "Expected DataType with precision but no scale";
     return new DataType(name, precision, -1, nullable);
   }
 
@@ -58,7 +56,6 @@ public class DataType {
   }
 
   public static DataType create(SqlTypeName name, boolean nullable) {
-    assert !name.allowsPrec() && !name.allowsScale() : "Expected DataType without precision or scale";
     return new DataType(name, -1, -1, nullable);
   }
 }

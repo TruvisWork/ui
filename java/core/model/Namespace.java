@@ -3,6 +3,7 @@ package com.calcite_new.core.model;
 import com.calcite_new.core.model.entity.DatabaseEntity;
 import com.calcite_new.core.model.entity.Table;
 import com.calcite_new.core.model.entity.View;
+import com.calcite_new.core.model.entity.ExternalTable;
 import org.apache.calcite.schema.Schema;
 import org.apache.calcite.schema.impl.AbstractSchema;
 
@@ -21,6 +22,14 @@ public class Namespace extends AbstractSchema {
   private final Map<Identifier, Namespace> children = new ConcurrentHashMap<>();
   private final EntityMap<Table> tables = new EntityMap<>();
   private final EntityMap<View> views = new EntityMap<>();
+  private final EntityMap<ExternalTable> externalTables = new EntityMap<>();
+  public void addExternalTable(ExternalTable extTable) {
+    externalTables.put(extTable);
+  }
+
+  public ExternalTable getExternalTable(Identifier name) {
+    return externalTables.get(name);
+  }
 
   public Namespace(Identifier name) {
     this.name = name;
@@ -91,7 +100,7 @@ public class Namespace extends AbstractSchema {
     public V get(Identifier name) {
       Key key = new Key(name, System.currentTimeMillis());
       Map.Entry<Key, V> entry = entities.floorEntry(key);
-      if (entry.getKey().name.equals(name)) {
+      if (entry != null && entry.getKey().name.equals(name)) {
         return entry.getValue();
       }
       return null;
