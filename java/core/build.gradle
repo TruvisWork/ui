@@ -1,0 +1,49 @@
+plugins {
+    id 'java-library'
+    id 'groovy'
+    id 'java-test-fixtures'
+    id 'org.springframework.boot' version '3.2.5'
+    id 'io.spring.dependency-management' version '1.1.4'
+}
+
+group = 'com.calcite-new'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Main dependencies
+    api(group: 'org.apache.calcite', name: 'calcite-core', version: '1.38.0') {
+        exclude group: 'org.slf4j', module: 'slf4j-simple'
+    }
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'com.google.cloud.sql:postgres-socket-factory:1.9.0'
+    implementation 'com.zaxxer:HikariCP:5.1.0'
+    implementation 'org.hibernate:hibernate-hikaricp:6.2.13.Final'
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.codehaus.groovy:groovy-all:3.0.19'
+    testImplementation 'org.spockframework:spock-core:2.3-groovy-3.0'
+
+    testFixturesImplementation group: 'org.apache.calcite', name: 'calcite-core', version: '1.38.0'
+}
+
+bootJar {
+    enabled = false
+}
+
+jar {
+    enabled = true
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
+}

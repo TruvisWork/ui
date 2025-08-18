@@ -1,0 +1,26 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://host:5432/db?currentSchema=public
+    username: postgres
+    password: pwd
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      leakDetectionThreshold: 2000
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        default_schema: public
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+
+processing:
+  page-size: 300
+  batch-size: 50
+  parallel-batches: 3
+  processing-timeout-minutes: 5

@@ -1,0 +1,59 @@
+plugins {
+  id 'java'
+  id 'groovy'
+  id 'org.sonarqube' version '6.0.0.5145' apply false
+}
+
+group = 'com.calcite-new'
+version = '1.0-SNAPSHOT'
+
+repositories {
+  mavenCentral()
+}
+
+subprojects {
+  apply plugin: 'java'
+//  apply plugin: 'jacoco'
+  apply plugin: 'org.sonarqube'
+
+  sonarqube {
+    properties {
+      property "sonar.projectKey", "calcite-new"
+      property "sonar.host.url", "http://localhost:9000"
+      property "sonar.login", "sqa_e79d6567a6b4bd38612b9b4de76c40f3b2954082"
+      property "sonar.sources", "src/main/java"
+      property "sonar.tests", "src/test/java"
+      property "sonar.java.binaries", "${layout.buildDirectory.get()}/classes/java/main"
+      property "sonar.coverage.jacoco.xmlReportPaths", "${layout.buildDirectory.get()}/reports/jacoco/test/jacocoTestReport.xml"
+    }
+  }
+
+  dependencies {
+    implementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.5.17'
+    implementation group: 'org.slf4j', name: 'slf4j-api', version: '2.0.17'
+    implementation 'org.hibernate.orm:hibernate-core:6.4.4.Final'
+    implementation 'org.postgresql:postgresql:42.7.3'
+    implementation 'com.zaxxer:HikariCP:5.1.0'
+    implementation 'org.slf4j:slf4j-api:2.0.9'
+    implementation 'org.slf4j:slf4j-simple:2.0.9'
+
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'org.mockito:mockito-core:5.2.0'
+    testImplementation 'org.mockito:mockito-junit-jupiter:5.2.0'
+  }
+}
+
+dependencies {
+}
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_17
+  targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.test {
+  useJUnitPlatform()
+}
