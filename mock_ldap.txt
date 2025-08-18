@@ -27,7 +27,6 @@ class MockLDAPAuthenticator:
                 "mail": ["user1@example.com"],
                 "displayName": ["User One"],
                 "givenName": ["User"],
-                # Remove market attribute
                 "sn": ["One"],
                 "department": ["Engineering"],
                 "title": ["Software Engineer"],
@@ -35,11 +34,11 @@ class MockLDAPAuthenticator:
                 "memberOf": [
                     "cn=developers,ou=groups,dc=example,dc=com",
                     "cn=employees,ou=groups,dc=example,dc=com",
-                    "cn=us_market,ou=markets,dc=example,dc=com",  # US market
-                    "cn=uk_market,ou=markets,dc=example,dc=com"   # UK market
+                    "cn=us_market,ou=markets,dc=example,dc=com",
+                    "cn=uk_market,ou=markets,dc=example,dc=com"
                 ],
                 "objectClass": ["inetOrgPerson", "organizationalPerson", "person"],
-                "dn": "uid=user1,ou=users,dc=example,dc=com"  # Add DN here
+                "dn": "uid=user1,ou=users,dc=example,dc=com"
             }
         },
         "user2": {
@@ -58,12 +57,12 @@ class MockLDAPAuthenticator:
                     "cn=sales,ou=groups,dc=example,dc=com",
                     "cn=managers,ou=groups,dc=example,dc=com",
                     "cn=employees,ou=groups,dc=example,dc=com",
-                    "cn=ca_market,ou=markets,dc=example,dc=com",  # CA market
-                    "cn=de_market,ou=markets,dc=example,dc=com",   # DE market
-                    "cn=jp_market,ou=markets,dc=example,dc=com"    # JP market
+                    "cn=ca_market,ou=markets,dc=example,dc=com",
+                    "cn=de_market,ou=markets,dc=example,dc=com",
+                    "cn=jp_market,ou=markets,dc=example,dc=com"
                 ],
                 "objectClass": ["inetOrgPerson", "organizationalPerson", "person"],
-                "dn": "uid=user2,ou=users,dc=example,dc=com"  # Add DN here
+                "dn": "uid=user2,ou=users,dc=example,dc=com"
             }
         },
         "admin": {
@@ -89,16 +88,16 @@ class MockLDAPAuthenticator:
                     "cn=jp_market,ou=markets,dc=example,dc=com"
                 ],
                 "objectClass": ["inetOrgPerson", "organizationalPerson", "person"],
-                "dn": "uid=admin,ou=users,dc=example,dc=com"  # Add DN here
+                "dn": "uid=admin,ou=users,dc=example,dc=com"
             }
         }
     }
+    
     def __init__(self, ldap_server: str = "ldap://mock.example.com", base_dn: str = "ou=users,dc=example,dc=com"):
         self.ldap_server = ldap_server
         self.base_dn = base_dn
 
-
-security = HTTPBearer(auto_error=False)  # Don't auto-error to allow cookie fallback
+security = HTTPBearer(auto_error=False)
 ldap_auth = MockLDAPAuthenticator()
 
 class TokenData(BaseModel):
@@ -109,7 +108,10 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    logger.info("CREATE_TOKEN - Data being encoded: %s", to_encode)
+    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    logger.info("CREATE_TOKEN - Token created successfully")
+    return token
 
 def verify_token(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
@@ -120,11 +122,16 @@ def verify_token(request: Request, credentials: HTTPAuthorizationCredentials = D
     token = None
     
     try:
+        logger.info("VERIFY_TOKEN_START - Checking for token")
+        
         # First try to get token from cookie
         token = request.cookies.get("access_token")
+        logger.info("VERIFY_TOKEN_COOKIE - Token found in cookie: %s", bool(token))
+        
         # If no cookie, try Authorization header
         if not token and credentials:
             token = credentials.credentials
+            logger.info("VERIFY_TOKEN_HEADER - Token found in header: %s", bool(token))
         
         if not token:
             logger.warning("TOKEN_VERIFICATION_FAILED - No token provided")
@@ -134,10 +141,14 @@ def verify_token(request: Request, credentials: HTTPAuthorizationCredentials = D
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
+        logger.info("VERIFY_TOKEN_DECODE - Attempting to decode token")
         # Decode and verify token
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        logger.info("VERIFY_TOKEN_PAYLOAD - Payload decoded successfully: %s", payload)
+        
         username: str = payload.get("sub")
         markets: List[str] = payload.get("markets", [])
+        uid: str = payload.get("uid")
         
         if not username:
             logger.warning("TOKEN_VERIFICATION_FAILED - No username in token")
@@ -147,8 +158,8 @@ def verify_token(request: Request, credentials: HTTPAuthorizationCredentials = D
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        logger.debug("TOKEN_VERIFICATION_SUCCESS - User: %s, Markets: %s", username, markets)
-        return {"username": username, "markets": markets, "uid": payload.get("uid")}
+        logger.debug("TOKEN_VERIFICATION_SUCCESS - User: %s, Markets: %s, UID: %s", username, markets, uid)
+        return {"username": username, "markets": markets, "uid": uid}
         
     except jwt.ExpiredSignatureError:
         logger.warning("TOKEN_VERIFICATION_FAILED - Token expired")
@@ -172,50 +183,52 @@ def verify_token(request: Request, credentials: HTTPAuthorizationCredentials = D
         )
 
 def find_user_by_identifier(identifier: str) -> Optional[dict]:
-    mock_users = [
-        {
-            "username": "john_doe",
-            "email": "john@example.com",
-            "name": "John Doe",
-            "markets": ["US", "EU"]
-        },
-        {
-            "username": "jane_smith",
-            "email": "jane@example.com",
-            "name": "Jane Smith",
-            "markets": ["CA", "DE", "JP"]
-        },
-        {
-            "username": "admin",
-            "email": "admin@company.com",
-            "name": "Administrator",
-            "markets": ["US", "EU", "CA", "DE", "JP"]
-        }
-    ]
-    for user in mock_users:
-        if identifier.lower() in [user["username"].lower(), user["email"].lower()]:
-            return user
+    """Find user by username or email from the mock LDAP users"""
+    for username, user_data in ldap_auth.MOCK_USERS.items():
+        user_attributes = user_data.get("attributes", {})
+        email = user_attributes.get("mail", [None])[0]
+        
+        if (identifier.lower() == username.lower() or 
+            (email and identifier.lower() == email.lower())):
+            return {
+                "username": username,
+                "email": email,
+                "name": user_attributes.get("displayName", [username])[0],
+                "markets": extract_markets_from_groups(user_attributes.get("memberOf", []))
+            }
     return None
 
 def send_password_reset_email(user: dict, reset_token: str) -> bool:
+    """Mock function to send password reset email"""
     logger.info(f"Sending password reset email to {user['email']} with token {reset_token}")
     return True  # Mock success
 
 def extract_markets_from_groups(member_of):
+    """Extract market codes from LDAP group membership"""
     markets = []
     market_prefix = "cn="
     market_suffix = "_market,ou=markets,"
     
     for group in member_of:
         if market_suffix in group:
-            market = group.split(market_prefix)[1].split("_market")[0].upper()
-            if market:
-                markets.append(market)
+            try:
+                market = group.split(market_prefix)[1].split("_market")[0].upper()
+                if market and market not in markets:
+                    markets.append(market)
+            except (IndexError, AttributeError):
+                logger.warning("Failed to extract market from group: %s", group)
+                continue
+    
+    logger.info("EXTRACT_MARKETS - Groups: %s, Markets: %s", member_of, markets)
     return markets
 
 def authenticate(username: str, password: str) -> Optional[Dict]:
+    """Authenticate user against mock LDAP"""
+    logger.info("AUTHENTICATE - Attempting to authenticate user: %s", username)
+    
     user = ldap_auth.MOCK_USERS.get(username)
     if user and user["password"] == password:
+        logger.info("AUTHENTICATE_SUCCESS - User %s authenticated", username)
         return {
             "username": username,
             "dn": user["attributes"]["dn"],
@@ -227,6 +240,8 @@ def authenticate(username: str, password: str) -> Optional[Dict]:
             "attributes": user["attributes"],
             "authenticated_at": datetime.utcnow().isoformat()
         }
+    
+    logger.warning("AUTHENTICATE_FAILED - Invalid credentials for user: %s", username)
     return None
 
 MARKET_GROUPS = {
