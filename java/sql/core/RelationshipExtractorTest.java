@@ -446,4 +446,24 @@ public class RelationshipExtractorTest {
         });
     }
 
+    @Test
+    void testCreateAccess_Deduplication() {
+        SqlIdentifier id = new SqlIdentifier(Arrays.asList("test_db", "test_schema", "test_table"), SqlParserPos.ZERO);
+        List<EntityRelationship> rels = new ArrayList<>();
+        relationshipExtractor.createAccess(id, "user1", "test_db", "test_schema", rels);
+        // Try to add the same relationship again
+        relationshipExtractor.createAccess(id, "user1", "test_db", "test_schema", rels);
+        assertEquals(1, rels.size(), "Duplicate access relationship should not be added");
+    }
+
+    @Test
+    void testCreateDependsOn_Deduplication() {
+        SqlIdentifier id = new SqlIdentifier(Arrays.asList("test_db", "test_schema", "test_table"), SqlParserPos.ZERO);
+        SqlIdentifier id2 = new SqlIdentifier(Arrays.asList("test_db", "test_schema", "test_table2"), SqlParserPos.ZERO);
+        List<EntityRelationship> rels2 = new ArrayList<>();
+        relationshipExtractor.createDependsOn(id, id2, "test_db", "test_schema", rels2);
+        // Try to add the same relationship again
+        relationshipExtractor.createDependsOn(id, id2, "test_db", "test_schema", rels2);
+        assertEquals(1, rels2.size(), "Duplicate depends-on relationship should not be added");
+    }
 }
