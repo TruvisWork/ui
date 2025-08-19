@@ -11,6 +11,7 @@ import org.apache.calcite.sql.SqlIdentifier;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
+import java.util.Objects;
 
 
 @Slf4j
@@ -66,11 +67,13 @@ public class RelationshipExtractor {
                     .entityName(userName)
                     .entityType(EntityType.USER)
                     .build();
-            relations.add(EntityRelationship.builder()
-                    .relationshipType(RelationshipType.ACCESSES)
-                    .sourceEntity(userEntity)
-                    .targetEntity(tableEntity)
-                    .build());
+            if (relationDoesNotExist(userEntity, tableEntity, RelationshipType.ACCESSES, relations)) {
+                relations.add(EntityRelationship.builder()
+                        .relationshipType(RelationshipType.ACCESSES)
+                        .sourceEntity(userEntity)
+                        .targetEntity(tableEntity)
+                        .build());
+            }
         } catch (Exception e) {
             throw new RuntimeException("Failed to create access relationship", e);
         }
@@ -90,14 +93,25 @@ public class RelationshipExtractor {
                 // Self-dependency is skipped
                 return;
             }
-            relations.add(EntityRelationship.builder()
-                    .relationshipType(RelationshipType.DEPENDS_ON)
-                    .sourceEntity(target)
-                    .targetEntity(source)
-                    .build());
+            if (relationDoesNotExist(target, source, RelationshipType.DEPENDS_ON, relations)) {
+                relations.add(EntityRelationship.builder()
+                        .relationshipType(RelationshipType.DEPENDS_ON)
+                        .sourceEntity(target)
+                        .targetEntity(source)
+                        .build());
+            }
         } catch (Exception e) {
             throw new RuntimeException("Failed to create depends-on relationship", e);
         }
+    }
+
+    private boolean relationDoesNotExist(Entity source, Entity target, RelationshipType type, List<EntityRelationship> relations) {
+        if (relations == null) return true;
+        return relations.stream().noneMatch(rel ->
+                rel.getRelationshipType() == type &&
+                        Objects.equals(rel.getSourceEntity(), source) &&
+                        Objects.equals(rel.getTargetEntity(), target)
+        );
     }
 
     private EntityType determineEntityType(String normalizedDb, String normalizedSchema, String normalizedTable) {
