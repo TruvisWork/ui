@@ -264,6 +264,129 @@ const Auth = () => {
     navigate('/');
   };
 
+  const handleForceLogin = async () => {
+    hideMessages();
+    setIsLoading(true);
+
+    try {
+      const credentials = btoa(`${conflictUsername}:${conflictPassword}`);
+      
+      const response = await makeApiRequest('/force-logout', {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Basic ${credentials}`,
+          'Content-Type': 'application/json'
+        },
+      });
+
+      if (response.ok) {
+        // Now try to login normally
+        const loginResponse = await makeApiRequest('/login', {
+          method: 'POST',
+          headers: { 
+            'Authorization': `Basic ${credentials}`,
+            'Content-Type': 'application/json'
+          },
+        });
+
+        if (loginResponse.ok) {
+          const result = await loginResponse.json();
+          
+          if (result.user) {
+            setUserName(result.user.username);
+            setUserEmail(result.user.email);
+            setUserDisplayName(result.user.displayName);
+            sessionStorage.setItem('username', result.user.username);
+          }
+
+          if (result.markets && result.markets.length > 0) {
+            setAllowedMarkets(result.markets);
+            sessionStorage.setItem('allowedMarkets', JSON.stringify(result.markets));
+            setSessionConflict(false);
+            setStep('market-select');
+          }
+        } else {
+          throw new Error('Login failed after force logout');
+        }
+      } else {
+        const errorData = await response.json().catch(() => ({ detail: 'Force logout failed' }));
+        throw new Error(errorData.detail || 'Failed to terminate existing sessions');
+      }
+    } catch (err) {
+      console.error('Force login error:', err);
+      showMessage(err.message, 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePasswordVerification = async (e) => {
+    e.preventDefault();
+    hideMessages();
+    setIsLoading(true);
+
+    try {
+      const credentials = btoa(`${userName}:${verificationPassword}`);
+      
+      const response = await makeApiRequest('/login', {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Basic ${credentials}`,
+          'Content-Type': 'application/json'
+        },
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Password verification failed';
+        
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.detail || errorData.message || errorMessage;
+        } catch (jsonError) {
+          console.log('Could not parse error JSON, using status-based message');
+        }
+        
+        if (errorMessage === 'Password verification failed') {
+          if (response.status === 401) {
+            errorMessage = 'Incorrect password.';
+          } else if (response.status === 403) {
+            errorMessage = 'Access forbidden. Please contact your administrator.';
+          } else if (response.status >= 500) {
+            errorMessage = 'Server error. Please try again later.';
+          } else {
+            errorMessage = `Verification failed (${response.status}). Please try again.`;
+          }
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      
+      if (result.user) {
+        sessionStorage.setItem('username', result.user.username);
+      }
+      
+      if (result.markets) {
+        setAllowedMarkets(result.markets);
+        sessionStorage.setItem('allowedMarkets', JSON.stringify(result.markets));
+      }
+      
+      setStep('market-select');
+      setVerificationPassword('');
+    } catch (err) {
+      console.error('Password verification error:', err);
+      
+      if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
+        showMessage('Network Error: Could not connect to server. Please check your connection and try again.', 'error');
+      } else {
+        showMessage(err.message, 'error');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="auth-page">
       <div className="auth-container">
@@ -653,127 +776,4 @@ const Auth = () => {
   );
 };
 
-export default Auth; connection and try again.', 'error');
-      } else {
-        showMessage(err.message, 'error');
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleForceLogin = async () => {
-    hideMessages();
-    setIsLoading(true);
-
-    try {
-      const credentials = btoa(`${conflictUsername}:${conflictPassword}`);
-      
-      const response = await makeApiRequest('/force-logout', {
-        method: 'POST',
-        headers: { 
-          'Authorization': `Basic ${credentials}`,
-          'Content-Type': 'application/json'
-        },
-      });
-
-      if (response.ok) {
-        // Now try to login normally
-        const loginResponse = await makeApiRequest('/login', {
-          method: 'POST',
-          headers: { 
-            'Authorization': `Basic ${credentials}`,
-            'Content-Type': 'application/json'
-          },
-        });
-
-        if (loginResponse.ok) {
-          const result = await loginResponse.json();
-          
-          if (result.user) {
-            setUserName(result.user.username);
-            setUserEmail(result.user.email);
-            setUserDisplayName(result.user.displayName);
-            sessionStorage.setItem('username', result.user.username);
-          }
-
-          if (result.markets && result.markets.length > 0) {
-            setAllowedMarkets(result.markets);
-            sessionStorage.setItem('allowedMarkets', JSON.stringify(result.markets));
-            setSessionConflict(false);
-            setStep('market-select');
-          }
-        } else {
-          throw new Error('Login failed after force logout');
-        }
-      } else {
-        const errorData = await response.json().catch(() => ({ detail: 'Force logout failed' }));
-        throw new Error(errorData.detail || 'Failed to terminate existing sessions');
-      }
-    } catch (err) {
-      console.error('Force login error:', err);
-      showMessage(err.message, 'error');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handlePasswordVerification = async (e) => {
-    e.preventDefault();
-    hideMessages();
-    setIsLoading(true);
-
-    try {
-      const credentials = btoa(`${userName}:${verificationPassword}`);
-      
-      const response = await makeApiRequest('/login', {
-        method: 'POST',
-        headers: { 
-          'Authorization': `Basic ${credentials}`,
-          'Content-Type': 'application/json'
-        },
-      });
-
-      if (!response.ok) {
-        let errorMessage = 'Password verification failed';
-        
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.detail || errorData.message || errorMessage;
-        } catch (jsonError) {
-          console.log('Could not parse error JSON, using status-based message');
-        }
-        
-        if (errorMessage === 'Password verification failed') {
-          if (response.status === 401) {
-            errorMessage = 'Incorrect password.';
-          } else if (response.status === 403) {
-            errorMessage = 'Access forbidden. Please contact your administrator.';
-          } else if (response.status >= 500) {
-            errorMessage = 'Server error. Please try again later.';
-          } else {
-            errorMessage = `Verification failed (${response.status}). Please try again.`;
-          }
-        }
-        
-        throw new Error(errorMessage);
-      }
-
-      const result = await response.json();
-      
-      if (result.user) {
-        sessionStorage.setItem('username', result.user.username);
-      }
-      
-      if (result.markets) {
-        setAllowedMarkets(result.markets);
-        sessionStorage.setItem('allowedMarkets', JSON.stringify(result.markets));
-      }
-      
-      setStep('market-select');
-      setVerificationPassword('');
-    } catch (err) {
-      console.error('Password verification error:', err);
-      
-      if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
-        showMessage('Network Error: Could not connect to server. Please check your
+export default Auth;
