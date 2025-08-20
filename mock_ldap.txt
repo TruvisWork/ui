@@ -7,14 +7,17 @@ import jwt
 import re
 import logging
 
+# Import the session manager
+from .session_manager import session_manager, UserSession
+
 # Logger
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# JWT Config
+# JWT Config - Shorter expiry since we're using session management
 SECRET_KEY = "your-secret-key-change-this-in-production"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 9000
+ACCESS_TOKEN_EXPIRE_MINUTES = 60  # Shorter token life, session manages the real timeout
 
 class MockLDAPAuthenticator:
     """Mock LDAP authenticator for testing."""
@@ -103,35 +106,94 @@ ldap_auth = MockLDAPAuthenticator()
 class TokenData(BaseModel):
     username: str
     markets: List[str]
+    session_id: str
+
+def get_client_ip(request: Request) -> str:
+    """Get client IP address from request"""
+    # Check for forwarded IP first (if behind proxy)
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    
+    # Check for real IP (if behind load balancer)
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip
+    
+    # Fall back to client IP
+    if hasattr(request, 'client') and request.client:
+        return request.client.host
+    
+    return "unknown"
+
+def get_user_agent(request: Request) -> str:
+    """Get user agent from request"""
+    return request.headers.get("User-Agent", "unknown")
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
-    to_encode.update({"exp": expire})
-    logger.info("CREATE_TOKEN - Data being encoded: %s", to_encode)
-    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    logger.info("CREATE_TOKEN - Token created successfully")
-    return token
+    """Create JWT token with session ID"""
+    try:
+        to_encode = data.copy()
+        expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+        to_encode.update({"exp": expire})
+        
+        token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+        logger.info("CREATE_TOKEN_SUCCESS - Token created for user: %s, session: %s", 
+                   data.get('sub'), data.get('session_id', 'unknown')[:8])
+        return token
+    except Exception as e:
+        logger.exception("CREATE_TOKEN_ERROR - Failed to create token: %s", str(e))
+        raise
+
+def create_session_and_token(username: str, uid: str, markets: List[str], 
+                           request: Request) -> tuple[str, UserSession]:
+    """Create both session and JWT token for a user"""
+    # Check if user is already logged in elsewhere
+    if session_manager.is_user_logged_in(username):
+        existing_session = session_manager.get_user_session_info(username)
+        logger.warning("USER_ALREADY_LOGGED_IN - User: %s, Existing session from IP: %s", 
+                      username, existing_session.get('ip_address') if existing_session else 'unknown')
+        raise HTTPException(
+            status_code=409,  # Conflict
+            detail=f"User is already logged in from another location. Please logout first or wait for session to expire."
+        )
+    
+    # Get client info
+    ip_address = get_client_ip(request)
+    user_agent = get_user_agent(request)
+    
+    # Create session
+    session = session_manager.create_session(
+        username=username,
+        uid=uid,
+        markets=markets,
+        ip_address=ip_address,
+        user_agent=user_agent
+    )
+    
+    # Create JWT token with session ID
+    token_data = {
+        "sub": username,
+        "markets": markets,
+        "uid": uid,
+        "session_id": session.session_id
+    }
+    
+    token = create_access_token(token_data, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    
+    return token, session
 
 def verify_token(request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    Verify token from either:
-    1. Cookie (preferred)
-    2. Authorization header (Bearer token)
+    Verify token and validate active session
     """
     token = None
     
     try:
-        logger.info("VERIFY_TOKEN_START - Checking for token")
-        
-        # First try to get token from cookie
+        # Get token from cookie or header
         token = request.cookies.get("access_token")
-        logger.info("VERIFY_TOKEN_COOKIE - Token found in cookie: %s", bool(token))
-        
-        # If no cookie, try Authorization header
         if not token and credentials:
             token = credentials.credentials
-            logger.info("VERIFY_TOKEN_HEADER - Token found in header: %s", bool(token))
         
         if not token:
             logger.warning("TOKEN_VERIFICATION_FAILED - No token provided")
@@ -141,46 +203,87 @@ def verify_token(request: Request, credentials: HTTPAuthorizationCredentials = D
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        logger.info("VERIFY_TOKEN_DECODE - Attempting to decode token")
-        # Decode and verify token
+        # Decode JWT token
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        logger.info("VERIFY_TOKEN_PAYLOAD - Payload decoded successfully: %s", payload)
-        
         username: str = payload.get("sub")
         markets: List[str] = payload.get("markets", [])
         uid: str = payload.get("uid")
+        session_id: str = payload.get("session_id")
         
-        if not username:
-            logger.warning("TOKEN_VERIFICATION_FAILED - No username in token")
+        if not username or not session_id:
+            logger.warning("TOKEN_VERIFICATION_FAILED - Missing username or session_id")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token: no username",
+                detail="Invalid token format",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        logger.debug("TOKEN_VERIFICATION_SUCCESS - User: %s, Markets: %s, UID: %s", username, markets, uid)
-        return {"username": username, "markets": markets, "uid": uid}
+        # Validate session
+        session = session_manager.validate_session(session_id, update_activity=True)
+        if not session:
+            logger.warning("SESSION_VALIDATION_FAILED - User: %s, SessionID: %s", 
+                          username, session_id[:8])
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has expired or is invalid. Please login again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Verify session belongs to the user
+        if session.username != username:
+            logger.warning("SESSION_USER_MISMATCH - Token user: %s, Session user: %s", 
+                          username, session.username)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid session",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        logger.debug("TOKEN_SESSION_VALIDATION_SUCCESS - User: %s, SessionID: %s", 
+                    username, session_id[:8])
+        
+        return {
+            "username": username, 
+            "markets": markets, 
+            "uid": uid, 
+            "session_id": session_id,
+            "session_info": {
+                "login_time": session.login_time.isoformat(),
+                "last_activity": session.last_activity.isoformat(),
+                "ip_address": session.ip_address
+            }
+        }
         
     except jwt.ExpiredSignatureError:
-        logger.warning("TOKEN_VERIFICATION_FAILED - Token expired")
+        logger.warning("TOKEN_EXPIRED - Token expired")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired",
+            detail="Token has expired. Please login again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     except jwt.PyJWTError as e:
-        logger.warning("TOKEN_VERIFICATION_FAILED - JWT error: %s", str(e))
+        logger.warning("TOKEN_INVALID - JWT error: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
+            detail="Invalid token. Please login again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("TOKEN_VERIFICATION_ERROR - Unexpected error: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error during token verification"
+            detail="Internal server error during authentication"
         )
+
+def logout_session(session_id: str) -> bool:
+    """Logout a specific session"""
+    return session_manager.terminate_session(session_id)
+
+def logout_user(username: str) -> int:
+    """Logout all sessions for a user"""
+    return session_manager.terminate_user_sessions(username)
 
 def find_user_by_identifier(identifier: str) -> Optional[dict]:
     """Find user by username or email from the mock LDAP users"""
@@ -200,8 +303,8 @@ def find_user_by_identifier(identifier: str) -> Optional[dict]:
 
 def send_password_reset_email(user: dict, reset_token: str) -> bool:
     """Mock function to send password reset email"""
-    logger.info(f"Sending password reset email to {user['email']} with token {reset_token}")
-    return True  # Mock success
+    logger.info("SEND_RESET_EMAIL - Sending to: %s", user.get('email', 'unknown'))
+    return True
 
 def extract_markets_from_groups(member_of):
     """Extract market codes from LDAP group membership"""
@@ -219,12 +322,11 @@ def extract_markets_from_groups(member_of):
                 logger.warning("Failed to extract market from group: %s", group)
                 continue
     
-    logger.info("EXTRACT_MARKETS - Groups: %s, Markets: %s", member_of, markets)
     return markets
 
 def authenticate(username: str, password: str) -> Optional[Dict]:
     """Authenticate user against mock LDAP"""
-    logger.info("AUTHENTICATE - Attempting to authenticate user: %s", username)
+    logger.info("AUTHENTICATE_START - Username: %s", username)
     
     user = ldap_auth.MOCK_USERS.get(username)
     if user and user["password"] == password:
@@ -246,7 +348,7 @@ def authenticate(username: str, password: str) -> Optional[Dict]:
 
 MARKET_GROUPS = {
     "US": "cn=us_market,ou=markets,dc=example,dc=com",
-    "UK": "cn=uk_market,ou=markets,dc=example,dc=com",
+    "UK": "cn=uk_market,ou=markets,dc=example,dc=com", 
     "CA": "cn=ca_market,ou=markets,dc=example,dc=com",
     "DE": "cn=de_market,ou=markets,dc=example,dc=com",
     "JP": "cn=jp_market,ou=markets,dc=example,dc=com"
