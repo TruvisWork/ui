@@ -18,6 +18,9 @@ const Auth = () => {
   const [isChangingMarket, setIsChangingMarket] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [verificationPassword, setVerificationPassword] = useState('');
+  const [sessionConflict, setSessionConflict] = useState(false);
+  const [conflictUsername, setConflictUsername] = useState('');
+  const [conflictPassword, setConflictPassword] = useState('');
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -45,10 +48,8 @@ const Auth = () => {
         lastError = error;
         console.error(`API request failed for ${endpoint} (attempt ${attempt + 1}):`, error);
         
-        // Only retry on network errors, not HTTP errors
         if (attempt < maxRetries && (error.name === 'TypeError' || error.message.includes('Failed to fetch'))) {
           console.log(`Retrying request (attempt ${attempt + 2}/${maxRetries + 1})...`);
-          // Progressive delay: 1s, 2s, 3s...
           await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
           continue;
         }
@@ -78,7 +79,6 @@ const Auth = () => {
         if (userData.authenticated) {
           sessionStorage.setItem('username', userData.username);
           
-          // User is authenticated, check if they want to change market
           const changeMarketRequest = sessionStorage.getItem('changeMarketRequest');
           
           if (changeMarketRequest) {
@@ -88,12 +88,10 @@ const Auth = () => {
             setAllowedMarkets(userData.markets || []);
             setStep('password-verification');
           } else {
-            // User is authenticated and has market selected, redirect to main app
             const currentMarket = sessionStorage.getItem('selectedMarket');
             if (currentMarket && userData.markets?.includes(currentMarket)) {
               navigate('/');
             } else {
-              // User needs to select market
               setAllowedMarkets(userData.markets || []);
               setUserName(userData.username);
               setStep('market-select');
@@ -107,13 +105,13 @@ const Auth = () => {
       }
     } catch (error) {
       console.error('Error checking auth status', error);
-      // Don't show error message on initial auth check
     }
   };
 
   const switchForm = (formType) => {
     setStep(formType);
     hideMessages();
+    setSessionConflict(false);
   };
 
   const showMessage = (message, type) => {
@@ -143,7 +141,6 @@ const Auth = () => {
     try {
       sessionStorage.setItem('selectedMarket', '');
       
-      // Create Basic Auth header
       const credentials = btoa(`${username}:${password}`);
       
       const response = await makeApiRequest('/login', {
@@ -155,19 +152,24 @@ const Auth = () => {
       });
 
       if (!response.ok) {
-        // Handle different error status codes
         let errorMessage = 'Login failed';
         
-        // Try to get error details from response first
         try {
           const errorData = await response.json();
           errorMessage = errorData.detail || errorData.message || errorMessage;
         } catch (jsonError) {
-          // If JSON parsing fails, use status-based messages
           console.log('Could not parse error JSON, using status-based message');
         }
         
-        // Fallback to status-based messages if no specific error was found
+        // Handle session conflict (409 status code)
+        if (response.status === 409) {
+          setSessionConflict(true);
+          setConflictUsername(username);
+          setConflictPassword(password);
+          setErrorMessage(errorMessage);
+          return;
+        }
+        
         if (errorMessage === 'Login failed') {
           if (response.status === 401) {
             errorMessage = 'Invalid username or password.';
@@ -185,7 +187,6 @@ const Auth = () => {
 
       const result = await response.json();
 
-      // Store user info and markets for UI purposes
       if (result.user) {
         setUserName(result.user.username);
         setUserEmail(result.user.email);
@@ -202,90 +203,10 @@ const Auth = () => {
       }
     } catch (err) {
       console.error('Login error:', err);
-      console.log('Error name:', err.name);
-      console.log('Error message:', err.message);
       
-      // Check if it's a network error (not an HTTP response error)
-      if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
-        console.log('Detected network error');
-        showMessage('Network Error: Could not connect to server. Please check your connection and try again.', 'error');
-      } else {
-        // For HTTP errors, show the specific error message
-        console.log('Detected HTTP error, showing message:', err.message);
-        showMessage(err.message, 'error');
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handlePasswordVerification = async (e) => {
-    e.preventDefault();
-    hideMessages();
-    setIsLoading(true);
-
-    try {
-      // Create Basic Auth header for verification
-      const credentials = btoa(`${userName}:${verificationPassword}`);
-      
-      const response = await makeApiRequest('/login', {
-        method: 'POST',
-        headers: { 
-          'Authorization': `Basic ${credentials}`,
-          'Content-Type': 'application/json'
-        },
-      });
-
-      if (!response.ok) {
-        let errorMessage = 'Password verification failed';
-        
-        // Try to get error details from response first
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.detail || errorData.message || errorMessage;
-        } catch (jsonError) {
-          console.log('Could not parse error JSON, using status-based message');
-        }
-        
-        // Fallback to status-based messages if no specific error was found
-        if (errorMessage === 'Password verification failed') {
-          if (response.status === 401) {
-            errorMessage = 'Incorrect password.';
-          } else if (response.status === 403) {
-            errorMessage = 'Access forbidden. Please contact your administrator.';
-          } else if (response.status >= 500) {
-            errorMessage = 'Server error. Please try again later.';
-          } else {
-            errorMessage = `Verification failed (${response.status}). Please try again.`;
-          }
-        }
-        
-        throw new Error(errorMessage);
-      }
-
-      const result = await response.json();
-      
-      // Store user info and markets for UI purposes
-      if (result.user) {
-        sessionStorage.setItem('username', result.user.username);
-      }
-      
-      // Update allowed markets and proceed to market selection
-      if (result.markets) {
-        setAllowedMarkets(result.markets);
-        sessionStorage.setItem('allowedMarkets', JSON.stringify(result.markets));
-      }
-      
-      setStep('market-select');
-      setVerificationPassword('');
-    } catch (err) {
-      console.error('Password verification error:', err);
-      
-      // Check if it's a network error (not an HTTP response error)
       if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
         showMessage('Network Error: Could not connect to server. Please check your connection and try again.', 'error');
       } else {
-        // For HTTP errors, show the specific error message
         showMessage(err.message, 'error');
       }
     } finally {
@@ -319,11 +240,9 @@ const Auth = () => {
     } catch (err) {
       console.error('Forgot password error:', err);
       
-      // Check if it's a network error (not an HTTP response error)
       if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
         showMessage('Network Error: Could not connect to server. Please check your connection and try again.', 'error');
       } else {
-        // For HTTP errors, show the specific error message
         showMessage(err.message, 'error');
       }
     } finally {
@@ -361,8 +280,51 @@ const Auth = () => {
         </div>
 
         <div className="form-container">
+          {/* Session Conflict Dialog */}
+          {sessionConflict && (
+            <div className="session-conflict-section">
+              <div className="session-conflict-icon">⚠️</div>
+              <h3>Session Conflict Detected</h3>
+              <div className="session-conflict-message">
+                <p>You are already logged in from another location or device.</p>
+                <p>You can:</p>
+                <ul>
+                  <li>Wait for the other session to expire (30 minutes of inactivity)</li>
+                  <li>Force logout from all other locations and login here</li>
+                  <li>Cancel this login attempt</li>
+                </ul>
+              </div>
+              
+              {errorMessage && (
+                <div className="error-message">{errorMessage}</div>
+              )}
+
+              <div className="session-conflict-buttons">
+                <button 
+                  className="auth-btn force-login-btn" 
+                  onClick={handleForceLogin}
+                  disabled={isLoading}
+                >
+                  {isLoading ? 'Logging out other sessions...' : 'Force Login (Logout Other Sessions)'}
+                </button>
+                <button 
+                  className="auth-btn cancel-btn" 
+                  onClick={() => {
+                    setSessionConflict(false);
+                    setConflictUsername('');
+                    setConflictPassword('');
+                    hideMessages();
+                  }}
+                  disabled={isLoading}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Login Form */}
-          {step === 'login' && (
+          {step === 'login' && !sessionConflict && (
             <div className="form-section active">
               {successMessage && (
                 <div className="success-message">{successMessage}</div>
@@ -538,7 +500,7 @@ const Auth = () => {
               )}
 
               <div className="market-selection-section">
-                <div className="market-icon">🌐</div>
+                <div className="market-icon">🌍</div>
                 <h3>{isChangingMarket ? 'Change Your Market' : 'Select Your Market'}</h3>
                 <p className="market-description">
                   {isChangingMarket 
@@ -561,7 +523,7 @@ const Auth = () => {
                           {market === 'CA' && '🇨🇦'}
                           {market === 'DE' && '🇩🇪'}
                           {market === 'JP' && '🇯🇵'}
-                          {!['US','UK','CA','DE','JP'].includes(market) && '🌐'}
+                          {!['US','UK','CA','DE','JP'].includes(market) && '🌍'}
                         </span>
                         <span className="market-name">{market}</span>
                       </div>
@@ -629,8 +591,189 @@ const Auth = () => {
           )}
         </div>
       </div>
+
+      <style jsx>{`
+        .session-conflict-section {
+          background: #fff3cd;
+          border: 1px solid #ffeaa7;
+          border-radius: 8px;
+          padding: 2rem;
+          text-align: center;
+          margin-bottom: 1rem;
+        }
+
+        .session-conflict-icon {
+          font-size: 3rem;
+          margin-bottom: 1rem;
+        }
+
+        .session-conflict-section h3 {
+          color: #856404;
+          margin-bottom: 1rem;
+        }
+
+        .session-conflict-message {
+          text-align: left;
+          margin-bottom: 1.5rem;
+        }
+
+        .session-conflict-message p {
+          margin-bottom: 0.5rem;
+          color: #856404;
+        }
+
+        .session-conflict-message ul {
+          margin-left: 1rem;
+          color: #856404;
+        }
+
+        .session-conflict-message li {
+          margin-bottom: 0.3rem;
+        }
+
+        .session-conflict-buttons {
+          display: flex;
+          gap: 1rem;
+          justify-content: center;
+        }
+
+        .force-login-btn {
+          background: #e74c3c !important;
+        }
+
+        .force-login-btn:hover {
+          background: #c0392b !important;
+        }
+
+        .force-login-btn:disabled {
+          background: #95a5a6 !important;
+        }
+      `}</style>
     </div>
   );
 };
 
-export default Auth;
+export default Auth; connection and try again.', 'error');
+      } else {
+        showMessage(err.message, 'error');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleForceLogin = async () => {
+    hideMessages();
+    setIsLoading(true);
+
+    try {
+      const credentials = btoa(`${conflictUsername}:${conflictPassword}`);
+      
+      const response = await makeApiRequest('/force-logout', {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Basic ${credentials}`,
+          'Content-Type': 'application/json'
+        },
+      });
+
+      if (response.ok) {
+        // Now try to login normally
+        const loginResponse = await makeApiRequest('/login', {
+          method: 'POST',
+          headers: { 
+            'Authorization': `Basic ${credentials}`,
+            'Content-Type': 'application/json'
+          },
+        });
+
+        if (loginResponse.ok) {
+          const result = await loginResponse.json();
+          
+          if (result.user) {
+            setUserName(result.user.username);
+            setUserEmail(result.user.email);
+            setUserDisplayName(result.user.displayName);
+            sessionStorage.setItem('username', result.user.username);
+          }
+
+          if (result.markets && result.markets.length > 0) {
+            setAllowedMarkets(result.markets);
+            sessionStorage.setItem('allowedMarkets', JSON.stringify(result.markets));
+            setSessionConflict(false);
+            setStep('market-select');
+          }
+        } else {
+          throw new Error('Login failed after force logout');
+        }
+      } else {
+        const errorData = await response.json().catch(() => ({ detail: 'Force logout failed' }));
+        throw new Error(errorData.detail || 'Failed to terminate existing sessions');
+      }
+    } catch (err) {
+      console.error('Force login error:', err);
+      showMessage(err.message, 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePasswordVerification = async (e) => {
+    e.preventDefault();
+    hideMessages();
+    setIsLoading(true);
+
+    try {
+      const credentials = btoa(`${userName}:${verificationPassword}`);
+      
+      const response = await makeApiRequest('/login', {
+        method: 'POST',
+        headers: { 
+          'Authorization': `Basic ${credentials}`,
+          'Content-Type': 'application/json'
+        },
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Password verification failed';
+        
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.detail || errorData.message || errorMessage;
+        } catch (jsonError) {
+          console.log('Could not parse error JSON, using status-based message');
+        }
+        
+        if (errorMessage === 'Password verification failed') {
+          if (response.status === 401) {
+            errorMessage = 'Incorrect password.';
+          } else if (response.status === 403) {
+            errorMessage = 'Access forbidden. Please contact your administrator.';
+          } else if (response.status >= 500) {
+            errorMessage = 'Server error. Please try again later.';
+          } else {
+            errorMessage = `Verification failed (${response.status}). Please try again.`;
+          }
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+      const result = await response.json();
+      
+      if (result.user) {
+        sessionStorage.setItem('username', result.user.username);
+      }
+      
+      if (result.markets) {
+        setAllowedMarkets(result.markets);
+        sessionStorage.setItem('allowedMarkets', JSON.stringify(result.markets));
+      }
+      
+      setStep('market-select');
+      setVerificationPassword('');
+    } catch (err) {
+      console.error('Password verification error:', err);
+      
+      if (err.message.includes('Failed to fetch') || err.name === 'TypeError' || err.name === 'NetworkError') {
+        showMessage('Network Error: Could not connect to server. Please check your
