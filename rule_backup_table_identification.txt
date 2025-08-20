@@ -1,0 +1,17 @@
+DROP TABLE IF EXISTS rule_backup_table_identification;
+
+CREATE TABLE rule_backup_table_identification AS
+SELECT DISTINCT
+    12 AS rule_id,
+    'hsbc' AS org_id,
+    project_name,
+    schema_name,
+    table_name
+FROM table_metadata
+WHERE 
+    LOWER(table_name) LIKE '%_backup%' 
+    OR LOWER(table_name) LIKE '%_bkp%'
+    OR LOWER(table_name) LIKE '%backup%' 
+    OR LOWER(table_name) LIKE '%bkp%' 
+    OR LOWER(table_name) LIKE '%backup%' || '%[0-9]%'  -- Simulate date suffix
+    OR LOWER(table_name) LIKE '%bkp%' || '%[0-9]%';
