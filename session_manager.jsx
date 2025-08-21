@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import './SessionManager.css';
 
 const SessionManager = ({ children }) => {
   const [sessionInfo, setSessionInfo] = useState(null);
@@ -9,6 +10,7 @@ const SessionManager = ({ children }) => {
   const warningTimer = useRef(null);
   const sessionTimer = useRef(null);
   const activityTimer = useRef(null);
+  const lastActivityRef = useRef(Date.now());
   
   const API_BASE_URL = 'http://localhost:8000';
   
@@ -16,20 +18,35 @@ const SessionManager = ({ children }) => {
   const SESSION_TIMEOUT_MINUTES = 30;
   const WARNING_MINUTES = 5; // Show warning 5 minutes before timeout
   const ACTIVITY_CHECK_INTERVAL = 60000; // Check every minute
+  const ACTIVITY_THROTTLE = 30000; // Only track activity every 30 seconds
 
   useEffect(() => {
-    checkSession();
-    startActivityTracking();
+    initializeSessionManager();
     
     return () => {
       clearAllTimers();
+      removeActivityListeners();
     };
   }, []);
 
+  const initializeSessionManager = async () => {
+    await checkSession();
+    startActivityTracking();
+  };
+
   const clearAllTimers = () => {
-    if (warningTimer.current) clearTimeout(warningTimer.current);
-    if (sessionTimer.current) clearTimeout(sessionTimer.current);
-    if (activityTimer.current) clearInterval(activityTimer.current);
+    if (warningTimer.current) {
+      clearTimeout(warningTimer.current);
+      warningTimer.current = null;
+    }
+    if (sessionTimer.current) {
+      clearInterval(sessionTimer.current);
+      sessionTimer.current = null;
+    }
+    if (activityTimer.current) {
+      clearInterval(activityTimer.current);
+      activityTimer.current = null;
+    }
   };
 
   const checkSession = async () => {
@@ -42,35 +59,45 @@ const SessionManager = ({ children }) => {
         const data = await response.json();
         setSessionInfo(data.session);
         scheduleWarning(data.session);
+        return true;
       } else if (response.status === 401) {
         handleSessionExpired();
+        return false;
+      } else {
+        console.warn('Session check returned unexpected status:', response.status);
+        return false;
       }
     } catch (error) {
       console.error('Session check failed:', error);
+      return false;
     }
   };
 
   const scheduleWarning = (session) => {
     if (!session) return;
 
-    const lastActivity = new Date(session.last_activity);
-    const now = new Date();
-    const timeSinceActivity = now - lastActivity;
-    const timeUntilWarning = (SESSION_TIMEOUT_MINUTES - WARNING_MINUTES) * 60 * 1000 - timeSinceActivity;
-    const timeUntilExpiry = SESSION_TIMEOUT_MINUTES * 60 * 1000 - timeSinceActivity;
+    try {
+      const lastActivity = new Date(session.last_activity);
+      const now = new Date();
+      const timeSinceActivity = now - lastActivity;
+      const timeUntilWarning = (SESSION_TIMEOUT_MINUTES - WARNING_MINUTES) * 60 * 1000 - timeSinceActivity;
+      const timeUntilExpiry = SESSION_TIMEOUT_MINUTES * 60 * 1000 - timeSinceActivity;
 
-    clearAllTimers();
+      clearAllTimers();
 
-    if (timeUntilWarning > 0) {
-      warningTimer.current = setTimeout(() => {
+      if (timeUntilWarning > 0) {
+        warningTimer.current = setTimeout(() => {
+          showSessionWarning();
+        }, timeUntilWarning);
+      } else if (timeUntilExpiry > 0) {
+        // Already in warning period
         showSessionWarning();
-      }, timeUntilWarning);
-    } else if (timeUntilExpiry > 0) {
-      // Already in warning period
-      showSessionWarning();
-    } else {
-      // Session should be expired
-      handleSessionExpired();
+      } else {
+        // Session should be expired
+        handleSessionExpired();
+      }
+    } catch (error) {
+      console.error('Error scheduling warning:', error);
     }
   };
 
@@ -80,20 +107,29 @@ const SessionManager = ({ children }) => {
   };
 
   const startCountdown = () => {
+    if (sessionTimer.current) {
+      clearInterval(sessionTimer.current);
+    }
+
     const updateCountdown = () => {
       if (!sessionInfo) return;
 
-      const lastActivity = new Date(sessionInfo.last_activity);
-      const now = new Date();
-      const timeSinceActivity = now - lastActivity;
-      const timeUntilExpiry = SESSION_TIMEOUT_MINUTES * 60 * 1000 - timeSinceActivity;
+      try {
+        const lastActivity = new Date(sessionInfo.last_activity);
+        const now = new Date();
+        const timeSinceActivity = now - lastActivity;
+        const timeUntilExpiry = SESSION_TIMEOUT_MINUTES * 60 * 1000 - timeSinceActivity;
 
-      if (timeUntilExpiry <= 0) {
+        if (timeUntilExpiry <= 0) {
+          handleSessionExpired();
+        } else {
+          const minutes = Math.floor(timeUntilExpiry / 60000);
+          const seconds = Math.floor((timeUntilExpiry % 60000) / 1000);
+          setTimeLeft(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+        }
+      } catch (error) {
+        console.error('Error updating countdown:', error);
         handleSessionExpired();
-      } else {
-        const minutes = Math.floor(timeUntilExpiry / 60000);
-        const seconds = Math.floor((timeUntilExpiry % 60000) / 1000);
-        setTimeLeft(`${minutes}:${seconds.toString().padStart(2, '0')}`);
       }
     };
 
@@ -102,24 +138,13 @@ const SessionManager = ({ children }) => {
   };
 
   const startActivityTracking = () => {
-    // Track user activity
-    const trackActivity = () => {
-      // Make a lightweight request to update session activity
-      fetch(`${API_BASE_URL}/me`, {
-        credentials: 'include'
-      }).catch(err => {
-        console.error('Activity tracking failed:', err);
-      });
-    };
-
     // Track various user activities
     const activities = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart', 'click'];
     
-    let lastActivity = Date.now();
     const handleActivity = () => {
       const now = Date.now();
-      if (now - lastActivity > 30000) { // Only track if 30 seconds have passed
-        lastActivity = now;
+      if (now - lastActivityRef.current > ACTIVITY_THROTTLE) {
+        lastActivityRef.current = now;
         trackActivity();
         
         // Reset warning if user becomes active
@@ -131,18 +156,40 @@ const SessionManager = ({ children }) => {
       }
     };
 
+    // Add event listeners
     activities.forEach(activity => {
       document.addEventListener(activity, handleActivity, { passive: true });
     });
 
-    // Periodic session validation
-    activityTimer.current = setInterval(checkSession, ACTIVITY_CHECK_INTERVAL);
-
-    return () => {
+    // Store cleanup function
+    window.sessionManagerCleanup = () => {
       activities.forEach(activity => {
         document.removeEventListener(activity, handleActivity);
       });
     };
+
+    // Periodic session validation
+    activityTimer.current = setInterval(() => {
+      checkSession();
+    }, ACTIVITY_CHECK_INTERVAL);
+  };
+
+  const removeActivityListeners = () => {
+    if (window.sessionManagerCleanup) {
+      window.sessionManagerCleanup();
+      delete window.sessionManagerCleanup;
+    }
+  };
+
+  const trackActivity = async () => {
+    try {
+      // Make a lightweight request to update session activity
+      await fetch(`${API_BASE_URL}/me`, {
+        credentials: 'include'
+      });
+    } catch (error) {
+      console.error('Activity tracking failed:', error);
+    }
   };
 
   const handleSessionExpired = () => {
@@ -151,8 +198,10 @@ const SessionManager = ({ children }) => {
     sessionStorage.clear();
     
     // Show session expired message
-    alert('Your session has expired due to inactivity. Please login again.');
-    navigate('/auth');
+    const confirmed = window.confirm('Your session has expired due to inactivity. Please login again.');
+    if (confirmed || confirmed === null) {
+      navigate('/auth');
+    }
   };
 
   const extendSession = async () => {
@@ -164,7 +213,7 @@ const SessionManager = ({ children }) => {
       if (response.ok) {
         setShowWarning(false);
         clearAllTimers();
-        checkSession(); // Refresh session info
+        await checkSession(); // Refresh session info
       } else {
         handleSessionExpired();
       }
@@ -201,7 +250,7 @@ const SessionManager = ({ children }) => {
             <div className="session-warning-icon">⏰</div>
             <h3>Session Expiring Soon</h3>
             <p>
-              Your session will expire in <strong>{timeLeft}</strong> due to inactivity.
+              Your session will expire in <strong>{timeLeft || '...'}</strong> due to inactivity.
             </p>
             <p>
               Do you want to extend your session?
@@ -223,85 +272,6 @@ const SessionManager = ({ children }) => {
           </div>
         </div>
       )}
-
-      <style jsx>{`
-        .session-warning-overlay {
-          position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          background: rgba(0, 0, 0, 0.7);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          z-index: 10000;
-        }
-
-        .session-warning-modal {
-          background: white;
-          border-radius: 12px;
-          padding: 2rem;
-          max-width: 400px;
-          width: 90%;
-          text-align: center;
-          box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        }
-
-        .session-warning-icon {
-          font-size: 3rem;
-          margin-bottom: 1rem;
-        }
-
-        .session-warning-modal h3 {
-          color: #e74c3c;
-          margin-bottom: 1rem;
-          font-size: 1.5rem;
-        }
-
-        .session-warning-modal p {
-          margin-bottom: 1rem;
-          color: #555;
-          line-height: 1.5;
-        }
-
-        .session-warning-buttons {
-          display: flex;
-          gap: 1rem;
-          justify-content: center;
-          margin-top: 1.5rem;
-        }
-
-        .btn-primary {
-          background: #3498db;
-          color: white;
-          border: none;
-          padding: 0.75rem 1.5rem;
-          border-radius: 6px;
-          cursor: pointer;
-          font-size: 1rem;
-          transition: background 0.2s;
-        }
-
-        .btn-primary:hover {
-          background: #2980b9;
-        }
-
-        .btn-secondary {
-          background: #95a5a6;
-          color: white;
-          border: none;
-          padding: 0.75rem 1.5rem;
-          border-radius: 6px;
-          cursor: pointer;
-          font-size: 1rem;
-          transition: background 0.2s;
-        }
-
-        .btn-secondary:hover {
-          background: #7f8c8d;
-        }
-      `}</style>
     </>
   );
 };
