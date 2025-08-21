@@ -6,6 +6,7 @@ import Optimize from "./components/Optimize";
 import Recommendation from "./components/Recommendation";
 import DataCatalogEditor from "./components/DataCatalogEditor";
 import QueryDetailsPage from './components/QueryDetailsPage';
+import SessionManager from './components/SessionManager';
 
 const MainLayout = () => {
   const [tabIndex, setTabIndex] = useState(0);
@@ -125,13 +126,15 @@ const MainLayout = () => {
 
 const App = () => {
   return (
-    <Router>
-      <Routes>
-        <Route path="/" element={<MainLayout />} />
-        <Route path="/query-details/:ruleId/:recommendation/:ruleTitle" element={<QueryDetailsPage />} />
-        <Route path="/*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Router>
+    <SessionManager>
+      <Router>
+        <Routes>
+          <Route path="/" element={<MainLayout />} />
+          <Route path="/query-details/:ruleId/:recommendation/:ruleTitle" element={<QueryDetailsPage />} />
+          <Route path="/*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Router>
+    </SessionManager>
   );
 };
 
