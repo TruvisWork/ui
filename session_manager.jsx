@@ -11,6 +11,7 @@ const SessionManager = ({ children }) => {
   const sessionTimer = useRef(null);
   const activityTimer = useRef(null);
   const lastActivityRef = useRef(Date.now());
+  const isInitializing = useRef(true);
   
   const API_BASE_URL = 'http://localhost:8000';
   
@@ -30,8 +31,16 @@ const SessionManager = ({ children }) => {
   }, []);
 
   const initializeSessionManager = async () => {
-    await checkSession();
-    startActivityTracking();
+    // Wait a moment for any ongoing auth processes to complete
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    const sessionValid = await checkSession();
+    if (sessionValid) {
+      startActivityTracking();
+    }
+    
+    // Mark initialization as complete
+    isInitializing.current = false;
   };
 
   const clearAllTimers = () => {
@@ -57,11 +66,25 @@ const SessionManager = ({ children }) => {
 
       if (response.ok) {
         const data = await response.json();
-        setSessionInfo(data.session);
-        scheduleWarning(data.session);
+        
+        // Only proceed with session scheduling if we have valid session data
+        if (data.session && data.session.last_activity) {
+          setSessionInfo(data.session);
+          
+          // Don't schedule warnings during initial load for fresh sessions
+          if (!isInitializing.current) {
+            scheduleWarning(data.session);
+          } else {
+            // For fresh sessions, just schedule a delayed check
+            setTimeout(() => scheduleWarning(data.session), 5000);
+          }
+        }
         return true;
       } else if (response.status === 401) {
-        handleSessionExpired();
+        // Only handle expiry if not in initial loading phase
+        if (!isInitializing.current) {
+          handleSessionExpired();
+        }
         return false;
       } else {
         console.warn('Session check returned unexpected status:', response.status);
@@ -74,7 +97,7 @@ const SessionManager = ({ children }) => {
   };
 
   const scheduleWarning = (session) => {
-    if (!session) return;
+    if (!session || !session.last_activity) return;
 
     try {
       const lastActivity = new Date(session.last_activity);
@@ -84,6 +107,15 @@ const SessionManager = ({ children }) => {
       const timeUntilExpiry = SESSION_TIMEOUT_MINUTES * 60 * 1000 - timeSinceActivity;
 
       clearAllTimers();
+
+      // Don't show warning for very fresh sessions (less than 1 minute old)
+      if (timeSinceActivity < 60000) {
+        // Schedule check for later
+        warningTimer.current = setTimeout(() => {
+          checkSession();
+        }, Math.max(60000 - timeSinceActivity, 30000)); // Check in 30s to 1min
+        return;
+      }
 
       if (timeUntilWarning > 0) {
         warningTimer.current = setTimeout(() => {
@@ -102,8 +134,22 @@ const SessionManager = ({ children }) => {
   };
 
   const showSessionWarning = () => {
-    setShowWarning(true);
-    startCountdown();
+    // Double check session is actually near expiry before showing warning
+    if (sessionInfo) {
+      const lastActivity = new Date(sessionInfo.last_activity);
+      const now = new Date();
+      const timeSinceActivity = now - lastActivity;
+      const timeUntilExpiry = SESSION_TIMEOUT_MINUTES * 60 * 1000 - timeSinceActivity;
+      
+      // Only show warning if less than warning threshold
+      if (timeUntilExpiry <= WARNING_MINUTES * 60 * 1000) {
+        setShowWarning(true);
+        startCountdown();
+      } else {
+        // Reschedule for correct time
+        scheduleWarning(sessionInfo);
+      }
+    }
   };
 
   const startCountdown = () => {
@@ -168,10 +214,13 @@ const SessionManager = ({ children }) => {
       });
     };
 
-    // Periodic session validation
+    // Periodic session validation - less frequent for fresh sessions
+    const checkInterval = isInitializing.current ? 5 * 60000 : ACTIVITY_CHECK_INTERVAL; // 5 minutes vs 1 minute
     activityTimer.current = setInterval(() => {
-      checkSession();
-    }, ACTIVITY_CHECK_INTERVAL);
+      if (!isInitializing.current || Date.now() - lastActivityRef.current > 5 * 60000) {
+        checkSession();
+      }
+    }, checkInterval);
   };
 
   const removeActivityListeners = () => {
@@ -193,6 +242,9 @@ const SessionManager = ({ children }) => {
   };
 
   const handleSessionExpired = () => {
+    // Don't show expiry dialog during initial load
+    if (isInitializing.current) return;
+    
     clearAllTimers();
     setShowWarning(false);
     sessionStorage.clear();
