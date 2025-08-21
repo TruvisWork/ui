@@ -714,64 +714,6 @@ const Auth = () => {
           )}
         </div>
       </div>
-
-      <style jsx>{`
-        .session-conflict-section {
-          background: #fff3cd;
-          border: 1px solid #ffeaa7;
-          border-radius: 8px;
-          padding: 2rem;
-          text-align: center;
-          margin-bottom: 1rem;
-        }
-
-        .session-conflict-icon {
-          font-size: 3rem;
-          margin-bottom: 1rem;
-        }
-
-        .session-conflict-section h3 {
-          color: #856404;
-          margin-bottom: 1rem;
-        }
-
-        .session-conflict-message {
-          text-align: left;
-          margin-bottom: 1.5rem;
-        }
-
-        .session-conflict-message p {
-          margin-bottom: 0.5rem;
-          color: #856404;
-        }
-
-        .session-conflict-message ul {
-          margin-left: 1rem;
-          color: #856404;
-        }
-
-        .session-conflict-message li {
-          margin-bottom: 0.3rem;
-        }
-
-        .session-conflict-buttons {
-          display: flex;
-          gap: 1rem;
-          justify-content: center;
-        }
-
-        .force-login-btn {
-          background: #e74c3c !important;
-        }
-
-        .force-login-btn:hover {
-          background: #c0392b !important;
-        }
-
-        .force-login-btn:disabled {
-          background: #95a5a6 !important;
-        }
-      `}</style>
     </div>
   );
 };
