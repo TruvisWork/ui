@@ -1,423 +1,431 @@
+/* Auth.css */
 .auth-page {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: white;
-    height: 100vh;
-    width: 100vw;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-    margin: 0;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.auth-container {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 500px;
+  overflow: hidden;
+}
+
+.auth-header {
+  background: #db1110;
+  color: white;
+  padding: 2rem;
+  text-align: center;
+}
+
+.auth-header h1 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.8rem;
+  font-weight: 600;
+}
+
+.auth-header p {
+  margin: 0;
+  opacity: 0.9;
+  font-size: 1rem;
+}
+
+.form-container {
+  padding: 2rem;
+}
+
+.form-section {
+  display: none;
+}
+
+.form-section.active {
+  display: block;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: #333;
+}
+
+.form-group input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 2px solid #e1e5e9;
+  border-radius: 6px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #db1110;
+}
+
+.form-group input:disabled {
+  background-color: #f8f9fa;
+  cursor: not-allowed;
+}
+
+.password-input-container {
+  position: relative;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #666;
+  padding: 0;
+}
+
+.password-toggle:hover {
+  color: #db1110;
+}
+
+.password-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.auth-btn {
+  width: 100%;
+  background: #db1110;
+  color: white;
+  border: none;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.auth-btn:hover:not(:disabled) {
+  background: #c10f0e;
+}
+
+.auth-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.cancel-btn {
+  background: #6c757d !important;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  background: #5a6268 !important;
+}
+
+.force-login-btn {
+  background: #e74c3c !important;
+}
+
+.force-login-btn:hover:not(:disabled) {
+  background: #c0392b !important;
+}
+
+.market-continue-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.forgot-password {
+  text-align: center;
+  margin-top: 1rem;
+}
+
+.forgot-password a {
+  color: #db1110;
+  text-decoration: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.forgot-password a:hover {
+  text-decoration: underline;
+}
+
+.success-message {
+  background: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.error-message {
+  background: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.session-conflict-section {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-radius: 8px;
+  padding: 2rem;
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+.session-conflict-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.session-conflict-section h3 {
+  color: #856404;
+  margin-bottom: 1rem;
+}
+
+.session-conflict-message {
+  text-align: left;
+  margin-bottom: 1.5rem;
+}
+
+.session-conflict-message p {
+  margin-bottom: 0.5rem;
+  color: #856404;
+}
+
+.session-conflict-message ul {
+  margin-left: 1rem;
+  color: #856404;
+}
+
+.session-conflict-message li {
+  margin-bottom: 0.3rem;
+}
+
+.session-conflict-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.verification-info {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+.user-icon {
+  font-size: 1.2rem;
+}
+
+.verification-buttons {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.verification-buttons .auth-btn {
+  flex: 1;
+  min-width: 120px;
+}
+
+.market-selection-section {
+  text-align: center;
+}
+
+.market-icon {
+  font-size: 3rem;
+  margin-bottom: 1rem;
+}
+
+.market-selection-section h3 {
+  color: #333;
+  margin-bottom: 1rem;
+  font-size: 1.5rem;
+}
+
+.market-description {
+  color: #666;
+  margin-bottom: 2rem;
+  line-height: 1.5;
+}
+
+.market-options {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.market-option {
+  border: 2px solid #e1e5e9;
+  border-radius: 8px;
+  padding: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: #f8f9fa;
+}
+
+.market-option:hover {
+  border-color: #db1110;
+  background: #fff;
+}
+
+.market-option.selected {
+  border-color: #db1110;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(219, 17, 16, 0.1);
+}
+
+.market-option-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.market-flag {
+  font-size: 1.5rem;
+}
+
+.market-name {
+  font-weight: 500;
+  font-size: 1.1rem;
+  color: #333;
+}
+
+.market-action-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.market-action-buttons .auth-btn {
+  width: auto;
+  min-width: 150px;
+  padding: 0.75rem 1.5rem;
+}
+
+/* Responsive Design */
+@media (max-width: 480px) {
+  .auth-page {
+    padding: 0.5rem;
   }
   
   .auth-container {
-    background: rgba(255, 255, 255, 1);
-    border: 2px solid #e1e5e9;
-    border-radius: 20px;
-    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
-    width: 100%;
-    max-width: 450px;
-    overflow: hidden;
-    position: relative;
+    margin: 0;
   }
   
   .auth-header {
-    text-align: center;
-    padding: 40px 40px 20px;
-    background: linear-gradient(135deg, #DB1110, #e63130);
-    color: white;
+    padding: 1.5rem;
   }
   
   .auth-header h1 {
-    font-size: 2rem;
-    font-weight: 600;
-    margin-bottom: 10px;
-  }
-  
-  .auth-header p {
-    opacity: 0.9;
-    font-size: 0.95rem;
+    font-size: 1.5rem;
   }
   
   .form-container {
-    padding: 40px;
+    padding: 1.5rem;
   }
   
-  .form-group {
-    margin-bottom: 20px;
-    position: relative;
-    transition: transform 0.3s ease;
+  .session-conflict-section {
+    padding: 1.5rem;
   }
   
-  .form-group label {
-    display: block;
-    margin-bottom: 8px;
-    color: #333333; /* Fixed: Changed from white to dark gray */
-    font-weight: 500;
-    font-size: 0.9rem;
+  .session-conflict-buttons {
+    flex-direction: column;
+  }
+  
+  .verification-buttons {
+    flex-direction: column;
+  }
+  
+  .market-action-buttons {
+    flex-direction: column;
+  }
+  
+  .market-action-buttons .auth-btn {
+    width: 100%;
+  }
+}
+
+/* Loading States */
+.auth-btn:disabled {
+  position: relative;
+}
+
+.auth-btn:disabled::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: auto;
+  border: 2px solid transparent;
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: button-loading-spinner 1s ease infinite;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  right: 0;
+}
+
+@keyframes button-loading-spinner {
+  from {
+    transform: rotate(0turn);
+  }
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* Focus styles for accessibility */
+.auth-btn:focus,
+.form-group input:focus,
+.market-option:focus,
+.password-toggle:focus {
+  outline: 2px solid #db1110;
+  outline-offset: 2px;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .auth-container {
+    border: 2px solid #000;
   }
   
   .form-group input {
-    width: 100%;
-    padding: 14px 16px;
-    border: 2px solid #e1e5e9;
-    border-radius: 10px;
-    font-size: 1rem;
-    transition: all 0.3s ease;
-    background: #fafbfc;
-    box-sizing: border-box;
-    color: #333333; /* Fixed: Changed from white to dark gray */
-  }
-  
-  .form-group input::placeholder {
-    color: #999999; /* Added placeholder color */
-  }
-  
-  .form-group input:focus {
-    outline: none;
-    border-color: #DB1110;
-    background: white;
-    box-shadow: 0 0 0 3px rgba(219, 17, 16, 0.1);
-  }
-
-  /* Password Input Container */
-  .password-input-container {
-    position: relative;
-    display: flex;
-    align-items: center;
-  }
-
-  .password-input-container input {
-    padding-right: 50px;
-  }
-
-  .password-toggle {
-    position: absolute;
-    right: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 6px;
-    color: #666;
-    transition: all 0.3s ease;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .password-toggle:hover {
-    color: #DB1110;
-    background: rgba(219, 17, 16, 0.1);
-  }
-
-  .password-toggle:focus {
-    outline: none;
-    color: #DB1110;
-    background: rgba(219, 17, 16, 0.1);
-  }
-
-  .password-toggle svg {
-    width: 20px;
-    height: 20px;
-  }
-  
-  .auth-btn {
-    width: 100%;
-    padding: 14px;
-    background: #DB1110;
-    color: white;
-    border: none;
-    border-radius: 10px;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    margin-top: 10px;
-  }
-  
-  .auth-btn:hover:not(:disabled) {
-    background: #e63130;
-    transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(219, 17, 16, 0.3);
-  }
-  
-  .auth-btn:active {
-    transform: translateY(0);
-  }
-  
-  .auth-btn:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-    transform: none;
-    box-shadow: none;
-  }
-  
-  .forgot-password {
-    text-align: center;
-    margin-top: 20px;
-  }
-  
-  .forgot-password a {
-    color: #DB1110;
-    text-decoration: none;
-    font-size: 0.9rem;
-    transition: color 0.3s ease;
-    cursor: pointer;
-  }
-  
-  .forgot-password a:hover {
-    color: #e63130;
-    text-decoration: underline;
-  }
-  
-  .form-section {
-    animation: fadeIn 0.3s ease;
-  }
-  
-  @keyframes fadeIn {
-    from { 
-      opacity: 0; 
-      transform: translateY(10px); 
-    }
-    to { 
-      opacity: 1; 
-      transform: translateY(0); 
-    }
-  }
-  
-  .success-message {
-    background: #d4edda;
-    color: #155724;
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 20px;
-    animation: fadeIn 0.3s ease;
-  }
-  
-  .error-message {
-    background: #f8d7da;
-    color: #721c24;
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 20px;
-    animation: fadeIn 0.3s ease;
-  }
-  
-  /* Market Selection Styles */
-  .market-selection-section {
-    text-align: center;
-  }
-  
-  .market-icon {
-    font-size: 3rem;
-    margin-bottom: 15px;
-    opacity: 0.8;
-  }
-  
-  .market-selection-section h3 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: #333;
-    margin-bottom: 10px;
-  }
-  
-  .market-description {
-    color: #666;
-    font-size: 0.9rem;
-    margin-bottom: 25px;
-    line-height: 1.4;
-  }
-  
-  .market-options {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 20px;
+    border-width: 2px;
   }
   
   .market-option {
-    padding: 12px 16px;
-    border: 2px solid #e1e5e9;
-    border-radius: 10px;
-    cursor: pointer;
-    background: #fafbfc;
-    text-align: center;
-    transition: all 0.3s ease;
-    color: #333333; /* Added explicit color */
+    border-width: 2px;
   }
-  
-  .market-option:hover {
-    border-color: #DB1110;
-    background: #fff;
-    transform: translateY(-1px);
-  }
-  
-  .market-option.selected {
-    border-color: #DB1110;
-    background: linear-gradient(135deg, #DB1110, #e63130);
-    color: white;
-  }
-  
-  .market-option-content {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-  }
-  
-  .market-continue-btn {
-    margin-top: 10px;
-    width: 100%;
-    padding: 12px;
-    font-size: 1rem;
-    background: #DB1110;
-    color: white;
-    border: none;
-    border-radius: 10px;
-    cursor: pointer;
-    transition: all 0.3s ease;
-  }
-  
-  .market-continue-btn:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-  }
-  
-
- /* Dark Mode Styles */
-@media (prefers-color-scheme: dark) {
-    .auth-page {
-      background: #1a1a1a; /* Fixed: Changed from white to dark */
-    }
-    
-    .auth-container {
-      background: #2a2a2a; /* Fixed: Changed from white to dark gray */
-      border: 2px solid #404040; /* Fixed: Changed from white to dark gray */
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
-    }
-  
-    .auth-header {
-      background: linear-gradient(135deg, #DB1110, #e63130);
-    }
-  
-    .form-group label {
-      color: #ffffff; /* White text on dark background */
-    }
-    
-    .form-group input {
-      background: #3a3a3a; /* Dark background */
-      border-color: #505050;
-      color: #ffffff; /* White text on dark background */
-    }
-    
-    .form-group input::placeholder {
-      color: #aaaaaa; /* Light gray placeholder */
-    }
-    
-    .form-group input:focus {
-      background: #404040;
-      border-color: #DB1110;
-      box-shadow: 0 0 0 3px rgba(219, 17, 16, 0.2);
-    }
-
-    .password-toggle {
-      color: #aaaaaa;
-    }
-
-    .password-toggle:hover,
-    .password-toggle:focus {
-      color: #ff4d4f;
-      background: rgba(255, 77, 79, 0.1);
-    }
-    
-    .forgot-password a {
-      color: #ff4d4f;
-    }
-    
-    .forgot-password a:hover {
-      color: #ff7875;
-    }
-    
-    .success-message {
-      background: #162312;
-      color: #52c41a;
-      border: 1px solid #389e0d;
-    }
-    
-    .error-message {
-      background: #2a1215;
-      color: #ff4d4f;
-      border: 1px solid #cf1322;
-    }
-    
-    .market-selection-section h3 {
-      color: #ffffff;
-    }
-    
-    .market-description {
-      color: #cccccc;
-    }
-    
-    .market-option {
-      background: #3a3a3a;
-      border-color: #505050;
-      color: #ffffff;
-    }
-    
-    .market-option:hover {
-      background: #404040;
-      border-color: #DB1110;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    }
-    
-    .market-option.selected {
-      border-color: #DB1110;
-      background: linear-gradient(135deg, #DB1110, #e63130);
-      color: white;
-      box-shadow: 0 6px 20px rgba(219, 17, 16, 0.4);
-    }
-    
-    .auth-btn:disabled {
-      background: #555;
-      color: #999;
-    }
-  }
-  
-  /* Responsive Design */
-  @media (max-width: 480px) {
-    .auth-container {
-      margin: 10px;
-      max-width: 100%;
-    }
-    
-    .form-container {
-      padding: 30px 25px;
-    }
-    
-    .auth-header {
-      padding: 30px 25px 15px;
-    }
-  
-    .market-options {
-      gap: 10px;
-    }
-  
-    .market-option {
-      padding: 12px 16px;
-    }
-  
-    .market-option-content {
-      gap: 8px;
-    }
-  
-    .market-flag {
-      font-size: 1.2rem;
-    }
-  
-    .market-name {
-      font-size: 1rem;
-    }
-  }
+}
