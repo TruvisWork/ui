@@ -48,15 +48,28 @@ public class QueryLogRepository {
         }
     }
 
-    public List<QueryLog> findAll(int page, int size) {
+    /**
+     * Find all query logs for a specific version with pagination
+     *
+     * @param versionId the version ID to filter by (required)
+     * @param page zero-based page index
+     * @param size the size of the page to be returned
+     * @return List of QueryLog objects for the specified version and page
+     * @throws IllegalArgumentException if versionId is null or empty
+     */
+    public List<QueryLog> findAll(int versionId, int page, int size) {
+
         try (Session session = HibernateUtil.getSessionFactory().openSession()) {
-            logger.info("Fetching page {} of size {} from QueryLog", page, size);
-            return session.createQuery("from QueryLog", QueryLog.class)
+            logger.info("Fetching page {} of size {} for version ID: {}", page, size, versionId);
+            return session.createQuery(
+                            "from QueryLog where versionId = :versionId",
+                            QueryLog.class)
+                    .setParameter("versionId", versionId)
                     .setFirstResult(page * size)
                     .setMaxResults(size)
                     .getResultList();
         } catch (Exception e) {
-            logger.error("Error fetching paged query logs", e);
+            logger.error("Error fetching paged query logs for version ID: " + versionId, e);
             throw e;
         }
     }
