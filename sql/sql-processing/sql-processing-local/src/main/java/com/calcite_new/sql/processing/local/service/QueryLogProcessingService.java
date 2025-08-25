@@ -1,6 +1,7 @@
 package com.calcite_new.sql.processing.local.service;
 
 import com.calcite_new.core.config.HibernateUtil;
+import com.calcite_new.core.config.ApplicationArgumentsConfig;
 import com.calcite_new.core.entity.QueryLog;
 import com.calcite_new.core.service.DataFetchService;
 import com.calcite_new.sql.processing.local.ProcessingOrchestrator;
@@ -24,13 +25,13 @@ public class QueryLogProcessingService {
         int page = 0;
         int totalProcessed = 0;
         List<QueryLog> chunk;
-
+        int versionId = ApplicationArgumentsConfig.VERSION;
         int pageSize = HibernateUtil.PAGE_SIZE;
 
         log.info("--- Starting paginated query log processing ---");
 
         do {
-            chunk = dataFetchService.getQueryLogsPage(page, pageSize);
+            chunk = dataFetchService.getQueryLogsPage(versionId, page, pageSize);
             if (chunk.isEmpty()) break;
 
             try {
