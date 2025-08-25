@@ -5,18 +5,10 @@ from .db_config import get_db_url_and_schema, get_instance_id
 import argparse
 import re
 import logging
-from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-try:
-    from .version_master import get_latest_pipeline_version, get_current_version_id
-    VERSION_MASTER_AVAILABLE = True
-except ImportError:
-    logger.warning("Version master not available - SQL scripts will run without version tracking")
-    VERSION_MASTER_AVAILABLE = False
 
 
 def get_db_connection():
@@ -40,41 +32,16 @@ def get_db_connection():
 def get_version_info(project_id="default_project", version_id_override=None):
     """Get version info for a project"""
     version_id = version_id_override
-    refresh_date = None
     
-    if version_id_override:
-        # If version ID is provided, use current timestamp
-        refresh_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        logger.info(f"Using provided version_id {version_id}, refresh_date {refresh_date} for project {project_id}")
-        return version_id, refresh_date
-    
-    if VERSION_MASTER_AVAILABLE:
-        try:
-            # First try to get current version ID
-            current_version_id = get_current_version_id()
-            if current_version_id:
-                version_id = current_version_id
-                refresh_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                logger.info(f"Using current version_id {version_id}, refresh_date {refresh_date} for project {project_id}")
-                return version_id, refresh_date
-            
-            # Fallback to latest completed version
-            version_id, extraction_date = get_latest_pipeline_version(project_id, status_filter='COMPLETED')
-            if version_id and extraction_date:
-                refresh_date = extraction_date.strftime('%Y-%m-%d %H:%M:%S') if isinstance(extraction_date, datetime) else str(extraction_date)
-                logger.info(f"Using latest completed version_id {version_id}, refresh_date {refresh_date} for project {project_id}")
-                return version_id, refresh_date
-        except Exception as e:
-            logger.error(f"Error getting version for project {project_id}: {e}")
-
-    # Fallback values
-    version_id = 123
-    refresh_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    logger.info(f"Using fallback version_id {version_id}, refresh_date {refresh_date} for {project_id}")
-    return version_id, refresh_date
+    if version_id:
+        logger.info(f"Using provided version_id {version_id} for project {project_id}")
+        return version_id
+    else:
+        logger.error("No version id provided")
+        raise
 
 
-def execute_sql_file(cursor, file_path, schema, instance_id, version_id, refresh_date, project_id):
+def execute_sql_file(cursor, file_path, schema, instance_id, version_id, project_id):
     try:
         with open(file_path, 'r') as file:
             sql_query = file.read()
@@ -82,7 +49,6 @@ def execute_sql_file(cursor, file_path, schema, instance_id, version_id, refresh
             schema=schema,
             instance=instance_id,
             version_id=version_id,
-            refresh_date=refresh_date,
             project_id=project_id
         )
         logger.debug(f"Executing SQL from {file_path}")
@@ -108,7 +74,7 @@ def get_ordered_sql_files(folder_path):
         return []
 
 
-def process_sql_files(folder_path, schema, instance_id, version_id, refresh_date, project_id):
+def process_sql_files(folder_path, schema, instance_id, version_id, project_id):
     conn, connector = get_db_connection()
     if conn is None:
         return False
@@ -119,7 +85,7 @@ def process_sql_files(folder_path, schema, instance_id, version_id, refresh_date
             return True
         for filename in sql_files:
             file_path = os.path.join(folder_path, filename)
-            execute_sql_file(cursor, file_path, schema, instance_id, version_id, refresh_date, project_id)
+            execute_sql_file(cursor, file_path, schema, instance_id, version_id, project_id)
         conn.commit()
         logger.info(f"Executed {len(sql_files)} files for project {project_id}")
         return True
@@ -148,7 +114,7 @@ def main():
     parser.add_argument("--config-path", default=None, help="Config file path")
     parser.add_argument("--project-id", default="default_project", help="Single project ID (for input mode)")
     parser.add_argument("--project-ids", default=None, help="Comma-separated project IDs (for output mode)")
-    parser.add_argument("--version-id", default=None, type=int, help="Override version ID")
+    parser.add_argument("--version-id", default=None, type=int, help="Version ID")
 
     args = parser.parse_args()
     if args.config_path:
@@ -192,7 +158,6 @@ def main():
                     break
 
     return 0 if success else 1
-
 
 if __name__ == "__main__":
     exit(main())
