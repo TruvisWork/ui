@@ -120,6 +120,7 @@ public class QueryLogProcessor {
     model.setSchema(queryLog.getSchema());
     model.setSessionId(queryLog.getSessionId());
     model.setUserName(queryLog.getUserName());
+    model.setVersionId(queryLog.getVersionId());
     return model;
   }
 
