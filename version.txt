@@ -1,6 +1,6 @@
 import os
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.cloud.sql.connector import Connector
 import pg8000
 from .db_config import get_db_url_and_schema, get_instance_id
@@ -12,20 +12,22 @@ logger = logging.getLogger(__name__)
 
 class VersionMaster:
     """
-    Version Master class to track pipeline execution status and stages
+    Enhanced Version Master class to track pipeline execution status and stages
     """
 
     def __init__(self):
         self.version_id = None
         self.project_ids = []
         self.extraction_date = None
+        self.start_time = None
         self.conn = None
         self.connector = None
+        self.days = None
 
     def get_db_connection(self):
         """Establish a connection to Cloud SQL PostgreSQL using IAM authentication"""
         try:
-            instance_connection_name, database, iam_user, schema, input_dir, ip_type = get_db_url_and_schema()
+            instance_connection_name, database, iam_user, schema, input_dir, ip_type, days = get_db_url_and_schema()
             self.connector = Connector()
             self.conn = self.connector.connect(
                 instance_connection_name,
@@ -35,6 +37,7 @@ class VersionMaster:
                 enable_iam_auth=True,
                 ip_type=ip_type,
             )
+            self.days = days
             return True
         except Exception as e:
             logger.error(f"Error: Unable to connect to the database. {e}")
@@ -57,7 +60,7 @@ class VersionMaster:
                 return False
 
             cursor = self.conn.cursor()
-            _, _, _, schema, _, _ = get_db_url_and_schema()
+            _, _, _, schema, _, _, _ = get_db_url_and_schema()
 
             create_table_query = f"""
             CREATE TABLE IF NOT EXISTS {schema}.version_master (
@@ -73,6 +76,7 @@ class VersionMaster:
             CREATE INDEX IF NOT EXISTS idx_version_master_extraction_date ON {schema}.version_master(extraction_date DESC);
             CREATE INDEX IF NOT EXISTS idx_version_master_status ON {schema}.version_master(status);
             CREATE INDEX IF NOT EXISTS idx_version_master_project_ids ON {schema}.version_master(project_ids);
+            CREATE INDEX IF NOT EXISTS idx_version_master_version_id ON {schema}.version_master(version_id DESC);
             """
 
             cursor.execute(create_table_query)
@@ -83,17 +87,18 @@ class VersionMaster:
 
         except Exception as e:
             logger.error(f"Error creating version master table: {e}")
-            if self.conn: self.conn.rollback()
+            if self.conn: 
+                self.conn.rollback()
             return False
 
     def get_next_version_id(self):
         """Get the next version ID across all projects"""
         try:
             if not self.conn and not self.get_db_connection():
-                return 123  # Start from 123 if no connection
+                return None
 
             cursor = self.conn.cursor()
-            _, _, _, schema, _, _ = get_db_url_and_schema()
+            _, _, _, schema, _, _, _ = get_db_url_and_schema()
 
             query = f"SELECT MAX(version_id) FROM {schema}.version_master"
             cursor.execute(query)
@@ -103,15 +108,14 @@ class VersionMaster:
             if result and result[0] is not None:
                 next_version_id = int(result[0]) + 1
             else:
-                # Table is empty, start from 123
-                next_version_id = 123
+                next_version_id = 1
 
             logger.info(f"Next global version ID: {next_version_id}")
             return next_version_id
 
         except Exception as e:
             logger.error(f"Error getting next version ID: {e}")
-            return 123  # Default to 123 if there's an error
+            raise
 
     def initialize_version(self, project_ids_list):
         """Initialize a new version entry for the pipeline run with a list of project IDs."""
@@ -125,14 +129,19 @@ class VersionMaster:
             self.version_id = self.get_next_version_id()
             self.project_ids = project_ids_list
             project_ids_str = ','.join(project_ids_list)
-            self.extraction_date = datetime.now()
+            
+            # Set extraction_date and start_time to current time
+            current_time = datetime.now()
+            self.extraction_date = current_time
+            self.end_time = current_time
+            self.start_time = self.end_time - timedelta(self.days)
 
             cursor = self.conn.cursor()
-            _, _, _, schema, _, _ = get_db_url_and_schema()
+            _, _, _, schema, _, _, _ = get_db_url_and_schema()
 
             insert_query = f"""
             INSERT INTO {schema}.version_master 
-            (version_id, project_ids, extraction_date, status, stage_name, start_time)
+            (version_id, project_ids, extraction_date, status, stage_name, start_time, end_time)
             VALUES (%s, %s, %s, %s, %s, %s)
             """
 
@@ -142,7 +151,8 @@ class VersionMaster:
                 self.extraction_date,
                 'RUNNING',
                 'Pipeline Initialization',
-                datetime.now()
+                self.start_time,
+                self.end_time
             ))
 
             self.conn.commit()
@@ -153,7 +163,8 @@ class VersionMaster:
 
         except Exception as e:
             logger.error(f"Error initializing version: {e}")
-            if self.conn: self.conn.rollback()
+            if self.conn: 
+                self.conn.rollback()
             return None
 
     def append_project_id(self, new_project_id):
@@ -168,7 +179,7 @@ class VersionMaster:
                 self.project_ids.append(new_project_id)
                 
                 cursor = self.conn.cursor()
-                _, _, _, schema, _, _ = get_db_url_and_schema()
+                _, _, _, schema, _, _, _ = get_db_url_and_schema()
 
                 project_ids_str = ','.join(self.project_ids)
                 update_query = f"UPDATE {schema}.version_master SET project_ids = %s WHERE version_id = %s"
@@ -185,7 +196,8 @@ class VersionMaster:
 
         except Exception as e:
             logger.error(f"Error appending project ID: {e}")
-            if self.conn: self.conn.rollback()
+            if self.conn: 
+                self.conn.rollback()
             return False
 
     def update_status(self, stage_name, status='IN_PROGRESS', error_message=None):
@@ -196,14 +208,25 @@ class VersionMaster:
                 return False
 
             cursor = self.conn.cursor()
-            _, _, _, schema, _, _ = get_db_url_and_schema()
+            _, _, _, schema, _, _, _ = get_db_url_and_schema()
 
+            current_time = datetime.now()
             params = []
+            
             if status in ['COMPLETED', 'FAILED']:
-                update_query = f"UPDATE {schema}.version_master SET status = %s, stage_name = %s, end_time = %s WHERE version_id = %s"
-                params = [status, stage_name, datetime.now(), self.version_id]
+                update_query = f"""
+                UPDATE {schema}.version_master 
+                SET status = %s, stage_name = %s, end_time = %s
+                WHERE version_id = %s
+                """
+                params = [status, stage_name, current_time, self.version_id]
             else:
-                update_query = f"UPDATE {schema}.version_master SET status = %s, stage_name = %s WHERE version_id = %s"
+                # For IN_PROGRESS or RUNNING status
+                update_query = f"""
+                UPDATE {schema}.version_master 
+                SET status = %s, stage_name = %s 
+                WHERE version_id = %s
+                """
                 params = [status, stage_name, self.version_id]
 
             cursor.execute(update_query, tuple(params))
@@ -215,60 +238,16 @@ class VersionMaster:
 
         except Exception as e:
             logger.error(f"Error updating status: {e}")
-            if self.conn: self.conn.rollback()
+            if self.conn: 
+                self.conn.rollback()
             return False
-
-    def get_latest_version_info(self, project_id=None, status_filter='COMPLETED'):
-        """Get the latest version that includes a specific project_id."""
-        try:
-            if not self.conn and not self.get_db_connection():
-                return None, None
-
-            cursor = self.conn.cursor()
-            _, _, _, schema, _, _ = get_db_url_and_schema()
-
-            query = f"SELECT version_id, extraction_date FROM {schema}.version_master"
-            params = []
-            conditions = []
-            if project_id:
-                conditions.append("project_ids LIKE %s")
-                params.append(f"%{project_id}%")
-            if status_filter:
-                conditions.append("status = %s")
-                params.append(status_filter)
-
-            if conditions:
-                query += " WHERE " + " AND ".join(conditions)
-
-            query += " ORDER BY version_id DESC LIMIT 1"
-
-            cursor.execute(query, tuple(params))
-            result = cursor.fetchone()
-            cursor.close()
-
-            if result:
-                logger.info(f"Latest version found: {result[0]}")
-                return result[0], result[1]
-            else:
-                logger.warning(f"No version found for project '{project_id}' with status '{status_filter}'")
-                return None, None
-
-        except Exception as e:
-            logger.error(f"Error getting latest version info: {e}")
-            return None, None
-
-    def get_current_version_info(self):
-        """Get current version information"""
-        if self.version_id and self.extraction_date and self.project_ids:
-            return self.version_id, self.extraction_date, ','.join(self.project_ids)
-        return None, None, None  # Should be initialized first
 
     def mark_step_completed(self, step_number, stage_name):
         status = 'IN_PROGRESS' if step_number < 7 else 'COMPLETED'
         return self.update_status(stage_name, status)
 
-    def mark_step_failed(self, step_number, stage_name, error_message):
-        return self.update_status(stage_name, 'FAILED', error_message)
+    def mark_step_failed(self, step_number, stage_name):
+        return self.update_status(stage_name, 'FAILED')
 
 
 # Global instance
@@ -294,20 +273,14 @@ def append_pipeline_project_id(project_id):
     return vm.append_project_id(project_id)
 
 def mark_pipeline_step_completed(step_number, stage_name):
+    """Mark a pipeline step as completed with step tracking"""
     vm = get_version_master()
     return vm.mark_step_completed(step_number, stage_name)
 
-def mark_pipeline_step_failed(step_number, stage_name, error_message):
+def mark_pipeline_step_failed(step_number, stage_name):
+    """Mark a pipeline step as failed with step tracking"""
     vm = get_version_master()
-    return vm.mark_step_failed(step_number, stage_name, error_message)
-
-def get_latest_pipeline_version(project_id="default_project", status_filter='COMPLETED'):
-    vm = get_version_master()
-    return vm.get_latest_version_info(project_id, status_filter)
-
-def get_current_pipeline_version():
-    vm = get_version_master()
-    return vm.get_current_version_info()
+    return vm.mark_step_failed(step_number, stage_name)
 
 def get_current_version_id():
     """Get just the current version ID"""
@@ -315,14 +288,15 @@ def get_current_version_id():
     version_id, _, _ = vm.get_current_version_info()
     return version_id
 
+
 def close_version_master_connection():
     vm = get_version_master()
     vm.close_connection()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Version Master Utility")
+    parser.add_argument("--config-path", default=None, help="Config file path")
     parser.add_argument("--get-version", action="store_true", help="Get the current running version ID")
-    parser.add_argument("--project-ids", help="Comma-separated project IDs")
     args = parser.parse_args()
 
     if args.get_version:
