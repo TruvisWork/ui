@@ -67,8 +67,17 @@ public final class DataFetchService {
         return queryLogRepository.findByQueryText(queryText);
     }
 
-    public List<QueryLog> getQueryLogsPage(int page, int size) {
-        return queryLogRepository.findAll(page, size);
+    /**
+     * Retrieves a paginated list of query logs for a specific version.
+     *
+     * @param versionId the version ID to filter by (required)
+     * @param page zero-based page index
+     * @param size the size of the page to be returned
+     * @return List of QueryLog objects for the specified version and page
+     * @throws IllegalArgumentException if versionId is null or empty
+     */
+    public List<QueryLog> getQueryLogsPage(int versionId, int page, int size) {
+        return queryLogRepository.findAll(versionId, page, size);
     }
 
     /**
