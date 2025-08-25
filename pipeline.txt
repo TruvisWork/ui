@@ -1,0 +1,914 @@
+#!/bin/bash
+
+# =============================================================================
+# Pipeline Execution Script with Version Master Integration
+# 
+# Description:
+#   This script executes a sequence of commands with comprehensive error handling,
+#   logging, progress tracking, and version management. It runs the following steps:
+#   1. Install extraction utility WHL package
+#   2. Initialize version master and get version ID
+#   3. Loop through project IDs for extraction, data loading, and input SQL
+#   4. Execute JAR file (for all projects combined)
+#   5. Run output SQL scripts (for all projects combined)
+#
+# Usage:
+#   ./execute_pipeline.sh [OPTIONS]
+#
+# Options:
+#   -h, --help                 Display this help message and exit
+#   -v, --verbose              Enable verbose logging
+#   -e, --venv PATH            Specify custom virtual environment path
+#   -f, --force-reinstall      Force reinstall of Python dependencies
+#   -s, --skip-venv            Skip virtual environment setup and activation
+#   -p, --project-ids PROJECTS Specify comma-separated project IDs for version tracking
+# =============================================================================
+
+# Exit on any command failure
+set -o pipefail
+
+# =============================================================================
+# Configuration
+# =============================================================================
+SCRIPT_NAME=$(basename "$0")
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="logs/pipeline_execution_${TIMESTAMP}.log"
+JAR_FILE="query-genie-1.0.0.jar"  # JAR filename
+DATA_TRANSFORMER_WHL_FILE="trulens_data_transformer-1.0.1-py3-none-any.whl"
+DATA_TRANSFORMATION_CONFIG_PATH="./data_transformation/config/config.ini" 
+DATA_EXTRACTOR_WHL_FILE="trulens_extraction_utility-1.0.1-py3-none-any.whl"
+DATA_EXTRACTOR_CONFIG_PATH="./extraction_utility/config/config.ini"
+PROJECT_IDS="default_project"  # Default project IDs (comma-separated)
+VERSION_ID=""  # Will be set after version master initialization
+
+# Create logs directory if it doesn't exist
+if [ ! -d "logs" ]; then
+    mkdir -p logs
+    echo "Created logs directory"
+fi
+
+JAR_PARAMS="-Dspring.config.location=file:config/application.yml"  # JAR parameters
+JAR_MEMORY="-Xmx2g -Xms1g"  # Memory allocation for JAR
+VERBOSE=false
+FORCE_REINSTALL=false
+SKIP_VENV=false
+
+# Virtual environment configuration
+VENV_PATH="${VENV_PATH:-./venv}"  # Default path, can be overridden by env var or CLI arg
+REQUIREMENTS_FILE="requirements.txt"
+REQUIREMENTS_HASH_FILE=".requirements.md5"
+
+# =============================================================================
+# Log Levels
+# =============================================================================
+LOG_LEVEL_INFO="INFO"
+LOG_LEVEL_ERROR="ERROR"
+LOG_LEVEL_DEBUG="DEBUG"
+LOG_LEVEL_WARNING="WARNING"
+
+# Array to store step execution times
+declare -a STEP_TIMES
+
+# Stage names for version tracking
+declare -a STAGE_NAMES=(
+    "WHL Package Installation - Extractor"
+    "Version Master Initialization"
+    "Data Extraction and Loading (Per Project)"
+    "WHL Package Installation - Transformer"
+    "JAR File Execution"
+    "Output SQL Scripts Execution"
+)
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+# Function to display usage information
+show_usage() {
+    cat << EOF
+Usage: $SCRIPT_NAME [OPTIONS]
+
+Execute a pipeline of commands in sequence with error handling, logging, and version tracking.
+
+Options:
+  -h, --help                 Display this help message and exit
+  -v, --verbose              Enable verbose logging
+  -e, --venv PATH            Specify custom virtual environment path
+  -f, --force-reinstall      Force reinstall of Python dependencies
+  -s, --skip-venv            Skip virtual environment setup and activation
+  -p, --project-ids PROJECTS Specify comma-separated project IDs for version tracking
+
+Examples:
+  $SCRIPT_NAME -p "project1,project2,project3"
+  $SCRIPT_NAME --project-ids "proj_a,proj_b" --verbose
+
+EOF
+}
+
+# Function to log messages with timestamp and log level
+log() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+
+    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+}
+
+# Function to log info messages
+log_info() {
+    log "$LOG_LEVEL_INFO" "$1"
+}
+
+# Function to log error messages
+log_error() {
+    log "$LOG_LEVEL_ERROR" "$1"
+}
+
+# Function to log warning messages
+log_warning() {
+    log "$LOG_LEVEL_WARNING" "$1"
+}
+
+# Function to log debug messages (only if verbose mode is enabled)
+log_debug() {
+    if [ "$VERBOSE" = true ]; then
+        log "$LOG_LEVEL_DEBUG" "$1"
+    fi
+}
+
+# Function to display progress
+show_progress() {
+    log_info "========================================================"
+    log_info "STEP $1: $2"
+    log_info "========================================================"
+}
+
+# Function to update version master status
+update_version_status() {
+    local step_number="$1"
+    local stage_name="$2"
+    local status="$3"
+    local error_message="$4"
+
+    log_debug "Updating version status: Step $step_number, Stage: $stage_name, Status: $status"
+
+    if [ "$status" = "FAILED" ]; then
+        python3 -c "
+from extraction_utility.version_master import mark_pipeline_step_failed
+mark_pipeline_step_failed($step_number, '$stage_name', '$error_message')
+" 2>/dev/null || log_warning "Failed to update version status in database"
+    else
+        python3 -c "
+from extraction_utility.version_master import mark_pipeline_step_completed
+mark_pipeline_step_completed($step_number, '$stage_name')
+" 2>/dev/null || log_warning "Failed to update version status in database"
+    fi
+}
+
+# Function to check if a command succeeded
+check_status() {
+    local exit_code="$1"
+    local description="$2"
+    local step_number="$3"
+    local stage_name="$4"
+
+    if [ $exit_code -ne 0 ]; then
+        log_error "$description failed with exit code $exit_code"
+        log_error "Aborting pipeline execution"
+        
+        # Update version master with failure
+        if [ -n "$step_number" ] && [ -n "$stage_name" ]; then
+            update_version_status "$step_number" "$stage_name" "FAILED" "$description failed with exit code $exit_code"
+        fi
+        
+        return $exit_code
+    else
+        log_info "Command completed successfully"
+        
+        # Update version master with success
+        if [ -n "$step_number" ] && [ -n "$stage_name" ]; then
+            update_version_status "$step_number" "$stage_name" "COMPLETED" ""
+        fi
+        
+        return 0
+    fi
+}
+
+# Function to execute a command with logging
+execute_command() {
+    local cmd="$1"
+    local description="$2"
+    local step_number="$3"
+    local stage_name="$4"
+
+    log_info "Executing: $cmd"
+    log_debug "Command description: $description"
+
+    # Execute command and capture both stdout and stderr
+    # Store output in temporary files
+    local stdout_file=$(mktemp)
+    local stderr_file=$(mktemp)
+
+    # Execute command and redirect outputs
+    eval "$cmd" > "$stdout_file" 2> "$stderr_file"
+    local status=$?
+
+    # Log stdout and stderr
+    if [ -s "$stdout_file" ]; then
+        log_info "STDOUT:"
+        cat "$stdout_file" | while read -r line; do
+            log_info "  $line"
+        done
+    fi
+
+    if [ -s "$stderr_file" ]; then
+        log_error "STDERR:"
+        cat "$stderr_file" | while read -r line; do
+            log_error "  $line"
+        done
+    fi
+
+    # Clean up temp files
+    rm -f "$stdout_file" "$stderr_file"
+
+    # Check status with version tracking
+    check_status $status "$description" "$step_number" "$stage_name"
+
+    return $status
+}
+
+# Function to check if a file exists
+check_file_exists() {
+    local file="$1"
+    local description="$2"
+
+    if [ ! -f "$file" ]; then
+        log_error "$description not found: $file"
+        return 1
+    fi
+
+    log_debug "File exists: $file"
+    return 0
+}
+
+# Function to archive data files from a directory
+archive_data_files() {
+    local source_dir="$1"
+    local archive_dir="archive"
+
+    if [[ ! -d "$source_dir" ]]; then
+        log_info "Directory $source_dir does not exist. Skipping archive process."
+        return 0
+    fi
+
+    if [[ -z "$(ls -A "$source_dir" 2>/dev/null)" ]]; then
+        log_info "Directory $source_dir is empty. Continuing..."
+        return 0
+    fi
+    
+    log_info "Found data files in $source_dir. Archiving..."
+
+    if [[ ! -d "$archive_dir" ]]; then
+        mkdir -p "$archive_dir"
+        log_info "Created archive directory: $archive_dir"
+    fi
+
+    mv "$source_dir"/* "$archive_dir"/ 2>/dev/null
+    
+    log_info "Files archived to: $archive_dir"
+    return 0
+}
+
+# =============================================================================
+# Virtual Environment Functions
+# =============================================================================
+
+# Function to check if virtual environment exists
+check_venv_exists() {
+    if [ -d "$VENV_PATH" ] && [ -f "$VENV_PATH/bin/activate" ]; then
+        log_debug "Virtual environment exists at: $VENV_PATH"
+        return 0
+    else
+        log_debug "Virtual environment does not exist at: $VENV_PATH"
+        return 1
+    fi
+}
+
+# Function to create virtual environment
+create_venv() {
+    log_info "Creating virtual environment at: $VENV_PATH"
+
+    # Check if python is available
+    if ! command -v python3 &> /dev/null; then
+        log_error "python3 command not found. Please install Python 3."
+        return 1
+    fi
+
+    # Create virtual environment
+    execute_command "python3 -m venv $VENV_PATH" "Creating virtual environment"
+    if [ $? -ne 0 ]; then
+        log_error "Failed to create virtual environment"
+        return 1
+    fi
+
+    log_info "Virtual environment created successfully"
+    return 0
+}
+
+# Function to activate virtual environment
+activate_venv() {
+    log_info "Activating virtual environment: $VENV_PATH"
+
+    if [ ! -f "$VENV_PATH/bin/activate" ]; then
+        log_error "Virtual environment activation script not found"
+        return 1
+    fi
+
+    # Source the activation script
+    # Note: We can't directly source in a subshell, so we'll set the PATH and VIRTUAL_ENV variables
+    export VIRTUAL_ENV="$VENV_PATH"
+    export PATH="$VENV_PATH/bin:$PATH"
+
+    # Verify activation
+    if [[ "$PATH" == *"$VENV_PATH/bin"* ]]; then
+        log_info "Virtual environment activated successfully"
+        log_debug "Using Python: $(which python3)"
+        return 0
+    else
+        log_error "Failed to activate virtual environment"
+        return 1
+    fi
+}
+
+# Function to calculate MD5 hash of requirements file
+calculate_requirements_hash() {
+    if [ -f "$REQUIREMENTS_FILE" ]; then
+        md5sum "$REQUIREMENTS_FILE" | cut -d ' ' -f 1
+    else
+        echo ""
+    fi
+}
+
+# Function to check if requirements need to be installed/updated
+check_requirements_changed() {
+    if [ ! -f "$REQUIREMENTS_FILE" ]; then
+        log_warning "Requirements file not found: $REQUIREMENTS_FILE"
+        return 1
+    fi
+
+    local current_hash=$(calculate_requirements_hash)
+
+    if [ ! -f "$REQUIREMENTS_HASH_FILE" ]; then
+        log_debug "Requirements hash file not found, will install dependencies"
+        return 0
+    fi
+
+    local stored_hash=$(cat "$REQUIREMENTS_HASH_FILE")
+
+    if [ "$current_hash" != "$stored_hash" ]; then
+        log_debug "Requirements have changed, will reinstall dependencies"
+        return 0
+    else
+        log_debug "Requirements unchanged since last installation"
+        return 1
+    fi
+}
+
+# Function to install/update dependencies
+install_dependencies() {
+    log_info "Installing/updating Python dependencies"
+
+    if [ ! -f "$REQUIREMENTS_FILE" ]; then
+        log_warning "Requirements file not found: $REQUIREMENTS_FILE"
+        return 0  # Not a fatal error, continue execution
+    fi
+
+    # Upgrade pip first
+    execute_command "pip install --upgrade pip" "Upgrading pip"
+
+    # Install dependencies
+    local install_cmd="pip install -r $REQUIREMENTS_FILE"
+    if [ "$FORCE_REINSTALL" = true ]; then
+        install_cmd="$install_cmd --force-reinstall"
+    fi
+
+    execute_command "$install_cmd" "Installing dependencies"
+    if [ $? -ne 0 ]; then
+        log_error "Failed to install dependencies"
+        return 1
+    fi
+
+    # Save hash of requirements file
+    calculate_requirements_hash > "$REQUIREMENTS_HASH_FILE"
+    log_info "Dependencies installed/updated successfully"
+    return 0
+}
+
+# Function to setup and activate virtual environment
+setup_venv() {
+    if [ "$SKIP_VENV" = true ]; then
+        log_info "Skipping virtual environment setup as requested"
+        return 0
+    fi
+
+    # Check if virtual environment exists
+    check_venv_exists
+    if [ $? -ne 0 ]; then
+        # Create virtual environment if it doesn't exist
+        create_venv
+        if [ $? -ne 0 ]; then
+            return 1
+        fi
+    fi
+
+    # Activate virtual environment
+    activate_venv
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+
+    # Check if requirements need to be installed/updated
+    local install_deps=false
+    if [ "$FORCE_REINSTALL" = true ]; then
+        install_deps=true
+    else
+        check_requirements_changed
+        if [ $? -eq 0 ]; then
+            install_deps=true
+        fi
+    fi
+
+    # Install dependencies if needed
+    if [ "$install_deps" = true ]; then
+        install_dependencies
+        if [ $? -ne 0 ]; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+# =============================================================================
+# Main Execution Functions
+# =============================================================================
+
+# Function to get version ID from version master
+get_version_id() {
+    log_info "Getting current version ID from version master"
+    
+    local version_output
+    version_output=$(python3 -c "
+from extraction_utility.version_master import get_current_version_id
+version_id = get_current_version_id()
+if version_id:
+    print(version_id)
+else:
+    exit(1)
+" 2>/dev/null)
+    
+    if [ $? -eq 0 ] && [ -n "$version_output" ]; then
+        VERSION_ID="$version_output"
+        log_info "Retrieved version ID: $VERSION_ID"
+        return 0
+    else
+        log_error "Failed to get version ID from version master"
+        return 1
+    fi
+}
+
+# Function to initialize version master
+initialize_version_master() {
+    local step_number="2"
+    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
+    show_progress "$step_number" "$stage_name"
+    
+    # Start timing
+    local start_time=$SECONDS
+    
+    log_info "Initializing version master for projects: $PROJECT_IDS"
+    
+    python3 -c "
+from extraction_utility.version_master import initialize_pipeline_version
+version_id = initialize_pipeline_version('$PROJECT_IDS')
+if not version_id:
+    exit(1)
+print(f'Initialized version: {version_id}')
+" 2>/dev/null
+    
+    local status=$?
+    if [ $status -ne 0 ]; then
+        log_error "Failed to initialize version master"
+        update_version_status "$step_number" "$stage_name" "FAILED" "Version master initialization failed"
+        return 1
+    fi
+    
+    # Get the version ID
+    get_version_id
+    if [ $? -ne 0 ]; then
+        update_version_status "$step_number" "$stage_name" "FAILED" "Failed to retrieve version ID"
+        return 1
+    fi
+    
+    log_info "Version master initialized successfully with version ID: $VERSION_ID"
+    update_version_status "$step_number" "$stage_name" "COMPLETED" ""
+    
+    local duration=$(( SECONDS - start_time ))
+    STEP_TIMES[1]=$duration
+    log_info "Step $step_number completed in $duration seconds"
+    return 0
+}
+
+# Function to install WHL package
+install_extractor_whl_package() {
+    local step_number="1"
+    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
+    show_progress "$step_number" "$stage_name"
+
+    # Start timing
+    local start_time=$SECONDS
+
+    # Check if WHL file exists
+    check_file_exists "$DATA_EXTRACTOR_WHL_FILE" "WHL package"
+    if [ $? -ne 0 ]; then
+        update_version_status "$step_number" "$stage_name" "FAILED" "WHL package file not found"
+        return 1
+    fi
+
+    execute_command "pip install $DATA_EXTRACTOR_WHL_FILE" "Installing $DATA_EXTRACTOR_WHL_FILE" "$step_number" "$stage_name"
+    local status=$?
+    
+    local duration=$(( SECONDS - start_time ))
+    STEP_TIMES[0]=$duration
+    log_info "Step $step_number completed in $duration seconds"
+    return $status
+}
+
+# Function to install transformer WHL package
+install_transformer_whl_package() {
+    local step_number="4"
+    local stage_name="${STAGE_NAMES[$((step_number-2))]}"  # Adjusted index
+    show_progress "$step_number" "$stage_name"
+
+    # Start timing
+    local start_time=$SECONDS
+
+    # Check if WHL file exists
+    check_file_exists "$DATA_TRANSFORMER_WHL_FILE" "WHL package"
+    if [ $? -ne 0 ]; then
+        update_version_status "$step_number" "$stage_name" "FAILED" "WHL package file not found"
+        return 1
+    fi
+
+    execute_command "pip install $DATA_TRANSFORMER_WHL_FILE" "Installing $DATA_TRANSFORMER_WHL_FILE" "$step_number" "$stage_name"
+    local status=$?
+    
+    local duration=$(( SECONDS - start_time ))
+    STEP_TIMES[3]=$duration
+    log_info "Step $step_number completed in $duration seconds"
+    return $status
+}
+
+# Function to process single project (extraction, data loading, input SQL)
+process_single_project() {
+    local project_id="$1"
+    local step_number="3"
+    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
+    
+    log_info "Processing project: $project_id"
+    
+    # Archive data files before extraction
+    archive_data_files "data_output"
+    
+    # Update project config and execute extraction
+    log_info "Executing data extraction for project: $project_id"
+    execute_command "python3 -m extraction_utility.info_schema --project-id \"$project_id\"" "extraction_utility/info_schema.py execution for $project_id"
+    local status1=$?
+    
+    if [ $status1 -eq 0 ]; then
+        execute_command "python3 -m extraction_utility.logs --project-id \"$project_id\"" "extraction_utility/logs.py execution for $project_id"
+        local status2=$?
+        
+        if [ $status2 -eq 0 ]; then
+            # Data loading to PostgreSQL
+            log_info "Loading data to PostgreSQL for project: $project_id"
+            execute_command "python3 -m postgres_utility.loadDataToPostgres --config-path \"$DATA_EXTRACTOR_CONFIG_PATH\" --project-id \"$project_id\" --version-id \"$VERSION_ID\"" "postgres_utility/loadDataToPostgres.py execution for $project_id"
+            local status3=$?
+            
+            if [ $status3 -eq 0 ]; then
+                # Run input SQL scripts
+                log_info "Running input SQL scripts for project: $project_id"
+                execute_command "python3 -m postgres_utility.run_sql_scripts input --config-path \"$DATA_TRANSFORMATION_CONFIG_PATH\" --project-id \"$project_id\" --version-id \"$VERSION_ID\"" "postgres_utility/run_sql_scripts.py input mode execution for $project_id"
+                local status4=$?
+                
+                if [ $status4 -eq 0 ]; then
+                    # Append project ID to version master
+                    python3 -c "
+from extraction_utility.version_master import append_pipeline_project_id
+append_pipeline_project_id('$project_id')
+" 2>/dev/null || log_warning "Failed to append project ID to version master"
+                    
+                    log_info "Successfully completed processing for project: $project_id"
+                    return 0
+                else
+                    log_error "Input SQL scripts failed for project: $project_id"
+                    return $status4
+                fi
+            else
+                log_error "Data loading failed for project: $project_id"
+                return $status3
+            fi
+        else
+            log_error "Logs extraction failed for project: $project_id"
+            return $status2
+        fi
+    else
+        log_error "Info schema extraction failed for project: $project_id"
+        return $status1
+    fi
+}
+
+# Function to execute data extraction and loading loop
+execute_project_loop() {
+    local step_number="3"
+    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
+    show_progress "$step_number" "$stage_name"
+
+    # Start timing
+    local start_time=$SECONDS
+    
+    # Convert PROJECT_IDS to array
+    IFS=',' read -ra PROJECT_ARRAY <<< "$PROJECT_IDS"
+    
+    # Process each project
+    for project_id in "${PROJECT_ARRAY[@]}"; do
+        project_id=$(echo "$project_id" | xargs)  # Trim whitespace
+        log_info "Starting processing for project: $project_id"
+        
+        process_single_project "$project_id"
+        local status=$?
+        
+        if [ $status -ne 0 ]; then
+            log_error "Failed processing project: $project_id"
+            update_version_status "$step_number" "$stage_name" "FAILED" "Project processing failed for $project_id"
+            return $status
+        fi
+    done
+    
+    update_version_status "$step_number" "$stage_name" "COMPLETED" ""
+    
+    local duration=$(( SECONDS - start_time ))
+    STEP_TIMES[2]=$duration
+    log_info "Step $step_number completed in $duration seconds"
+    
+    return 0
+}
+
+# Function to execute JAR file
+execute_jar() {
+    local step_number="5"
+    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
+    show_progress "$step_number" "$stage_name"
+
+    # Start timing
+    local start_time=$SECONDS
+
+    # Check if file exists
+    check_file_exists "$JAR_FILE" "JAR file"
+    if [ $? -ne 0 ]; then
+        update_version_status "$step_number" "$stage_name" "FAILED" "JAR file not found"
+        return 1
+    fi
+
+    # Execute the command with version ID parameter
+    execute_command "java $JAR_MEMORY $JAR_PARAMS -Dversion.id=$VERSION_ID -jar $JAR_FILE" "JAR execution with version $VERSION_ID" "$step_number" "$stage_name"
+    local status=$?
+
+    # Calculate and store execution time
+    local duration=$(( SECONDS - start_time ))
+    STEP_TIMES[4]=$duration
+    log_info "Step $step_number completed in $duration seconds"
+
+    return $status
+}
+
+# Function to execute output SQL scripts
+execute_output_sql_scripts() {
+    local step_number="6"
+    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
+    show_progress "$step_number" "$stage_name"
+
+    # Start timing
+    local start_time=$SECONDS
+
+    # Execute the command with version tracking for all projects combined
+    execute_command "python3 -m postgres_utility.run_sql_scripts output --config-path \"$DATA_TRANSFORMATION_CONFIG_PATH\" --project-ids \"$PROJECT_IDS\" --version-id \"$VERSION_ID\"" "postgres_utility/run_sql_scripts.py output mode execution for all projects" "$step_number" "$stage_name"
+    local status=$?
+
+    # Calculate and store execution time
+    local duration=$(( SECONDS - start_time ))
+    STEP_TIMES[5]=$duration
+    log_info "Step $step_number completed in $duration seconds"
+
+    return $status
+}
+
+# Function to print execution summary
+print_summary() {
+    local status="$1"
+    local failed_step="$2"
+    local end_time=$(date "+%Y-%m-%d %H:%M:%S")
+    local duration=$SECONDS
+
+    log_info ""
+    log_info "========================================================"
+    log_info "EXECUTION SUMMARY"
+    log_info "========================================================"
+
+    if [ $status -eq 0 ]; then
+        log_info "Status: SUCCESS - All steps completed successfully"
+    else
+        log_error "Status: FAILURE - Pipeline failed at step $failed_step"
+    fi
+
+    log_info "Project IDs processed: $PROJECT_IDS"
+    log_info "Version ID: $VERSION_ID"
+    log_info "Start time: $START_TIME"
+    log_info "End time: $end_time"
+    log_info "Total duration: $(($duration / 60)) minutes and $(($duration % 60)) seconds"
+    echo "Total duration: $(($duration / 60)) minutes and $(($duration % 60)) seconds"
+
+    # Print step durations
+    log_info ""
+    log_info "STEP EXECUTION TIMES:"
+
+    # Step times
+    for i in {0..5}; do
+        if [ -n "${STEP_TIMES[$i]}" ]; then
+            local mins=$(( ${STEP_TIMES[$i]} / 60 ))
+            local secs=$(( ${STEP_TIMES[$i]} % 60 ))
+            log_info "Step $((i+1)): $mins minutes and $secs seconds"
+        fi
+    done
+
+    log_info ""
+    log_info "Log file: $LOG_FILE"
+    log_info "========================================================"
+    
+    # Close version master connection
+    python3 -c "
+from extraction_utility.version_master import close_version_master_connection
+close_version_master_connection()
+" 2>/dev/null || true
+}
+
+# =============================================================================
+# Parse Command Line Arguments
+# =============================================================================
+parse_arguments() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -v|--verbose)
+                VERBOSE=true
+                log_info "Verbose mode enabled"
+                ;;
+            -e|--venv)
+                if [ -n "$2" ]; then
+                    VENV_PATH="$2"
+                    log_info "Using custom virtual environment path: $VENV_PATH"
+                    shift
+                else
+                    log_error "Error: --venv requires a path argument"
+                    exit 1
+                fi
+                ;;
+            -f|--force-reinstall)
+                FORCE_REINSTALL=true
+                log_info "Force reinstall of dependencies enabled"
+                ;;
+            -s|--skip-venv)
+                SKIP_VENV=true
+                log_info "Skipping virtual environment setup"
+                ;;
+            -p|--project-ids)
+                if [ -n "$2" ]; then
+                    PROJECT_IDS="$2"
+                    log_info "Using project IDs: $PROJECT_IDS"
+                    shift
+                else
+                    log_error "Error: --project-ids requires comma-separated project IDs"
+                    exit 1
+                fi
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+        shift
+    done
+}
+
+# =============================================================================
+# Main Execution
+# =============================================================================
+main() {
+    # Initialize variables
+    SECONDS=0
+    START_TIME=$(date "+%Y-%m-%d %H:%M:%S")
+
+    # Initialize log file
+    echo "Pipeline Execution Log - $START_TIME" > "$LOG_FILE"
+    log_info "Starting pipeline execution with project IDs: $PROJECT_IDS"
+    log_info "Log file: $LOG_FILE"
+
+    if [ "$VERBOSE" = true ]; then
+        log_info "Verbose logging enabled"
+    fi
+
+    # Setup virtual environment
+    setup_venv
+    if [ $? -ne 0 ]; then
+        log_error "Failed to set up Python virtual environment"
+        print_summary 1 "Virtual Environment Setup"
+        exit 1
+    fi
+
+    # Track current step for summary
+    local current_step=1
+    local exit_status=0
+
+    # Step 1: Install Extractor WHL package
+    install_extractor_whl_package
+    exit_status=$?
+    if [ $exit_status -ne 0 ]; then
+        log_error "Step $current_step failed with exit code $exit_status"
+        print_summary 1 $current_step
+        exit 1
+    fi
+    current_step=$((current_step + 1))
+
+    # Step 2: Initialize version master and get version ID
+    initialize_version_master
+    exit_status=$?
+    if [ $exit_status -ne 0 ]; then
+        log_error "Step $current_step failed with exit code $exit_status"
+        print_summary 1 $current_step
+        exit 1
+    fi
+    current_step=$((current_step + 1))
+
+    # Step 3: Execute project loop (extraction, data loading, input SQL for each project)
+    execute_project_loop
+    exit_status=$?
+    if [ $exit_status -ne 0 ]; then
+        log_error "Step $current_step failed with exit code $exit_status"
+        print_summary 1 $current_step
+        exit 1
+    fi
+    current_step=$((current_step + 1))
+
+    # Step 4: Install Transformer WHL package
+    install_transformer_whl_package
+    exit_status=$?
+    if [ $exit_status -ne 0 ]; then
+        log_error "Step $current_step failed with exit code $exit_status"
+        print_summary 1 $current_step
+        exit 1
+    fi
+    current_step=$((current_step + 1))
+
+    # Step 5: Execute JAR file (for all projects combined)
+    execute_jar
+    exit_status=$?
+    if [ $exit_status -ne 0 ]; then
+        log_error "Step $current_step failed with exit code $exit_status"
+        print_summary 1 $current_step
+        exit 1
+    fi
+    current_step=$((current_step + 1))
+
+    # Step 6: Run output SQL scripts (for all projects combined)
+    execute_output_sql_scripts
+    exit_status=$?
+    if [ $exit_status -ne 0 ]; then
+        log_error "Step $current_step failed with exit code $exit_status"
+        print_summary 1 $current_step
+        exit 1
+    fi
+
+    # Print successful summary
+    print_summary 0 6
+    exit 0
+}
+
+# Parse command line arguments
+parse_arguments "$@"
+
+# Execute main function
+main
