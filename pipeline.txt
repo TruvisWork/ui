@@ -32,7 +32,8 @@ LOG_FILE="logs/pipeline_execution_${TIMESTAMP}.log"
 JAR_FILE="query-genie-1.0.0.jar"  # JAR filename
 DATA_TRANSFORMER_WHL_FILE="trulens_data_transformer-1.0.1-py3-none-any.whl"
 DATA_EXTRACTOR_WHL_FILE="trulens_extraction_utility-1.0.1-py3-none-any.whl"
-DATA_TRANSFORMATION_CONFIG_PATH="./data_transformation/config/config.ini" 
+DATA_TRANSFORMATION_CONFIG_PATH="./data_transformation/config/config.ini"
+DATA_EXTRACTOR_CONFIG_PATH="./extraction_utility/config/config.ini" 
 
 # Create logs directory if it doesn't exist
 if [ ! -d "logs" ]; then
@@ -81,13 +82,14 @@ Options:
   -h, --help                 Display this help message and exit
   -v, --verbose              Enable verbose logging
   -p, --project-ids IDS      Comma-separated list of project IDs (default: default_project)
+  -c, --config-path PATH     Specify config file path for version master
   -e, --venv PATH            Specify custom virtual environment path
   -f, --force-reinstall      Force reinstall of Python dependencies
   -s, --skip-venv            Skip virtual environment setup and activation
 
 Examples:
   $SCRIPT_NAME -p "project1,project2,project3"
-  $SCRIPT_NAME -v -p "single_project"
+  $SCRIPT_NAME -v -p "single_project" -c "./custom/config.ini"
 
 EOF
 }
@@ -233,8 +235,13 @@ archive_data_files() {
 initialize_version_master() {
     log_info "Initializing version master for projects: $PROJECT_IDS"
     
-    # Convert comma-separated string to Python list format
+    # Set config path as environment variable if needed, then initialize
     VERSION_ID=$(python3 -c "
+import os
+import sys
+# Set config path as environment variable if the version master needs it
+os.environ['CONFIG_PATH'] = '$DATA_EXTRACTOR_CONFIG_PATH'
+sys.path.append('./extraction_utility')
 from extraction_utility.version_master import initialize_pipeline_version
 try:
     project_list = [p.strip() for p in '$PROJECT_IDS'.split(',')]
@@ -798,6 +805,16 @@ parse_arguments() {
                     shift
                 else
                     log_error "Error: --project-ids requires a comma-separated list argument"
+                    exit 1
+                fi
+                ;;
+            -c|--config-path)
+                if [ -n "$2" ]; then
+                    DATA_EXTRACTOR_CONFIG_PATH="$2"
+                    log_info "Using config path: $DATA_EXTRACTOR_CONFIG_PATH"
+                    shift
+                else
+                    log_error "Error: --config-path requires a path argument"
                     exit 1
                 fi
                 ;;
