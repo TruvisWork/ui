@@ -5,23 +5,19 @@
 # 
 # Description:
 #   This script executes a sequence of commands with comprehensive error handling,
-#   logging, progress tracking, and version management. It runs the following steps:
-#   1. Install extraction utility WHL package
-#   2. Initialize version master and get version ID
-#   3. Loop through project IDs for extraction, data loading, and input SQL
-#   4. Execute JAR file (for all projects combined)
-#   5. Run output SQL scripts (for all projects combined)
+#   logging, and progress tracking. It integrates version master functionality
+#   and processes multiple project IDs.
 #
 # Usage:
-#   ./execute_pipeline.sh [OPTIONS]
+#   ./new_pipe.sh [OPTIONS]
 #
 # Options:
 #   -h, --help                 Display this help message and exit
 #   -v, --verbose              Enable verbose logging
+#   -p, --project-ids IDS      Comma-separated list of project IDs
 #   -e, --venv PATH            Specify custom virtual environment path
 #   -f, --force-reinstall      Force reinstall of Python dependencies
 #   -s, --skip-venv            Skip virtual environment setup and activation
-#   -p, --project-ids PROJECTS Specify comma-separated project IDs for version tracking
 # =============================================================================
 
 # Exit on any command failure
@@ -35,11 +31,8 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="logs/pipeline_execution_${TIMESTAMP}.log"
 JAR_FILE="query-genie-1.0.0.jar"  # JAR filename
 DATA_TRANSFORMER_WHL_FILE="trulens_data_transformer-1.0.1-py3-none-any.whl"
-DATA_TRANSFORMATION_CONFIG_PATH="./data_transformation/config/config.ini" 
 DATA_EXTRACTOR_WHL_FILE="trulens_extraction_utility-1.0.1-py3-none-any.whl"
-DATA_EXTRACTOR_CONFIG_PATH="./extraction_utility/config/config.ini"
-PROJECT_IDS="default_project"  # Default project IDs (comma-separated)
-VERSION_ID=""  # Will be set after version master initialization
+DATA_TRANSFORMATION_CONFIG_PATH="./data_transformation/config/config.ini" 
 
 # Create logs directory if it doesn't exist
 if [ ! -d "logs" ]; then
@@ -52,6 +45,10 @@ JAR_MEMORY="-Xmx2g -Xms1g"  # Memory allocation for JAR
 VERBOSE=false
 FORCE_REINSTALL=false
 SKIP_VENV=false
+
+# Project configuration
+PROJECT_IDS="default_project"
+VERSION_ID=""
 
 # Virtual environment configuration
 VENV_PATH="${VENV_PATH:-./venv}"  # Default path, can be overridden by env var or CLI arg
@@ -69,16 +66,6 @@ LOG_LEVEL_WARNING="WARNING"
 # Array to store step execution times
 declare -a STEP_TIMES
 
-# Stage names for version tracking
-declare -a STAGE_NAMES=(
-    "WHL Package Installation - Extractor"
-    "Version Master Initialization"
-    "Data Extraction and Loading (Per Project)"
-    "WHL Package Installation - Transformer"
-    "JAR File Execution"
-    "Output SQL Scripts Execution"
-)
-
 # =============================================================================
 # Utility Functions
 # =============================================================================
@@ -88,19 +75,19 @@ show_usage() {
     cat << EOF
 Usage: $SCRIPT_NAME [OPTIONS]
 
-Execute a pipeline of commands in sequence with error handling, logging, and version tracking.
+Execute a pipeline of commands in sequence with error handling and logging.
 
 Options:
   -h, --help                 Display this help message and exit
   -v, --verbose              Enable verbose logging
+  -p, --project-ids IDS      Comma-separated list of project IDs (default: default_project)
   -e, --venv PATH            Specify custom virtual environment path
   -f, --force-reinstall      Force reinstall of Python dependencies
   -s, --skip-venv            Skip virtual environment setup and activation
-  -p, --project-ids PROJECTS Specify comma-separated project IDs for version tracking
 
 Examples:
   $SCRIPT_NAME -p "project1,project2,project3"
-  $SCRIPT_NAME --project-ids "proj_a,proj_b" --verbose
+  $SCRIPT_NAME -v -p "single_project"
 
 EOF
 }
@@ -143,53 +130,14 @@ show_progress() {
     log_info "========================================================"
 }
 
-# Function to update version master status
-update_version_status() {
-    local step_number="$1"
-    local stage_name="$2"
-    local status="$3"
-    local error_message="$4"
-
-    log_debug "Updating version status: Step $step_number, Stage: $stage_name, Status: $status"
-
-    if [ "$status" = "FAILED" ]; then
-        python3 -c "
-from extraction_utility.version_master import mark_pipeline_step_failed
-mark_pipeline_step_failed($step_number, '$stage_name', '$error_message')
-" 2>/dev/null || log_warning "Failed to update version status in database"
-    else
-        python3 -c "
-from extraction_utility.version_master import mark_pipeline_step_completed
-mark_pipeline_step_completed($step_number, '$stage_name')
-" 2>/dev/null || log_warning "Failed to update version status in database"
-    fi
-}
-
 # Function to check if a command succeeded
 check_status() {
-    local exit_code="$1"
-    local description="$2"
-    local step_number="$3"
-    local stage_name="$4"
-
-    if [ $exit_code -ne 0 ]; then
-        log_error "$description failed with exit code $exit_code"
+    if [ $1 -ne 0 ]; then
+        log_error "$2 failed with exit code $1"
         log_error "Aborting pipeline execution"
-        
-        # Update version master with failure
-        if [ -n "$step_number" ] && [ -n "$stage_name" ]; then
-            update_version_status "$step_number" "$stage_name" "FAILED" "$description failed with exit code $exit_code"
-        fi
-        
-        return $exit_code
+        return $1
     else
         log_info "Command completed successfully"
-        
-        # Update version master with success
-        if [ -n "$step_number" ] && [ -n "$stage_name" ]; then
-            update_version_status "$step_number" "$stage_name" "COMPLETED" ""
-        fi
-        
         return 0
     fi
 }
@@ -198,8 +146,6 @@ check_status() {
 execute_command() {
     local cmd="$1"
     local description="$2"
-    local step_number="$3"
-    local stage_name="$4"
 
     log_info "Executing: $cmd"
     log_debug "Command description: $description"
@@ -231,8 +177,8 @@ execute_command() {
     # Clean up temp files
     rm -f "$stdout_file" "$stderr_file"
 
-    # Check status with version tracking
-    check_status $status "$description" "$step_number" "$stage_name"
+    # Check status
+    check_status $status "$description"
 
     return $status
 }
@@ -277,6 +223,76 @@ archive_data_files() {
     
     log_info "Files archived to: $archive_dir"
     return 0
+}
+
+# =============================================================================
+# Version Master Functions
+# =============================================================================
+
+# Function to initialize version master
+initialize_version_master() {
+    log_info "Initializing version master for projects: $PROJECT_IDS"
+    
+    VERSION_ID=$(python3 -c "
+from extraction_utility.version_master import initialize_pipeline_version
+try:
+    vid = initialize_pipeline_version('$PROJECT_IDS')
+    print(vid if vid else '')
+except Exception as e:
+    print('')
+" 2>/dev/null)
+
+    if [ -z "$VERSION_ID" ]; then
+        log_error "Failed to initialize version master"
+        return 1
+    fi
+    
+    log_info "Initialized version master with version ID: $VERSION_ID"
+    return 0
+}
+
+# Function to update version status
+update_version_status() {
+    local step="$1"
+    local stage="$2"
+    local status="$3"
+    
+    log_debug "Updating version status: Step $step, Stage $stage, Status $status"
+    
+    python3 -c "
+from extraction_utility.version_master import mark_pipeline_step_completed, mark_pipeline_step_failed
+try:
+    if '$status' == 'FAILED':
+        mark_pipeline_step_failed($step, '$stage')
+    else:
+        mark_pipeline_step_completed($step, '$stage')
+except Exception as e:
+    pass
+" 2>/dev/null || log_debug "Version master update skipped"
+}
+
+# Function to append project ID to pipeline
+append_pipeline_project_id() {
+    local project_id="$1"
+    
+    python3 -c "
+from extraction_utility.version_master import append_pipeline_project_id
+try:
+    append_pipeline_project_id('$project_id')
+except Exception as e:
+    pass
+" 2>/dev/null || log_debug "Pipeline project ID append skipped"
+}
+
+# Function to close version master connection
+close_version_master() {
+    python3 -c "
+from extraction_utility.version_master import close_version_master_connection
+try:
+    close_version_master_connection()
+except Exception as e:
+    pass
+" 2>/dev/null || true
 }
 
 # =============================================================================
@@ -453,222 +469,207 @@ setup_venv() {
 # Main Execution Functions
 # =============================================================================
 
-# Function to get version ID from version master
-get_version_id() {
-    log_info "Getting current version ID from version master"
-    
-    local version_output
-    version_output=$(python3 -c "
-from extraction_utility.version_master import get_current_version_id
-version_id = get_current_version_id()
-if version_id:
-    print(version_id)
-else:
-    exit(1)
-" 2>/dev/null)
-    
-    if [ $? -eq 0 ] && [ -n "$version_output" ]; then
-        VERSION_ID="$version_output"
-        log_info "Retrieved version ID: $VERSION_ID"
-        return 0
-    else
-        log_error "Failed to get version ID from version master"
-        return 1
-    fi
-}
-
-# Function to initialize version master
-initialize_version_master() {
-    local step_number="2"
-    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
-    show_progress "$step_number" "$stage_name"
-    
-    # Start timing
-    local start_time=$SECONDS
-    
-    log_info "Initializing version master for projects: $PROJECT_IDS"
-    
-    python3 -c "
-from extraction_utility.version_master import initialize_pipeline_version
-version_id = initialize_pipeline_version('$PROJECT_IDS')
-if not version_id:
-    exit(1)
-print(f'Initialized version: {version_id}')
-" 2>/dev/null
-    
-    local status=$?
-    if [ $status -ne 0 ]; then
-        log_error "Failed to initialize version master"
-        update_version_status "$step_number" "$stage_name" "FAILED" "Version master initialization failed"
-        return 1
-    fi
-    
-    # Get the version ID
-    get_version_id
-    if [ $? -ne 0 ]; then
-        update_version_status "$step_number" "$stage_name" "FAILED" "Failed to retrieve version ID"
-        return 1
-    fi
-    
-    log_info "Version master initialized successfully with version ID: $VERSION_ID"
-    update_version_status "$step_number" "$stage_name" "COMPLETED" ""
-    
-    local duration=$(( SECONDS - start_time ))
-    STEP_TIMES[1]=$duration
-    log_info "Step $step_number completed in $duration seconds"
-    return 0
-}
-
-# Function to install WHL package
+# Function to install extractor WHL package
 install_extractor_whl_package() {
-    local step_number="1"
-    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
-    show_progress "$step_number" "$stage_name"
+    local step_number="$1"
+    show_progress "$step_number" "Installing $DATA_EXTRACTOR_WHL_FILE package"
 
     # Start timing
     local start_time=$SECONDS
 
     # Check if WHL file exists
-    check_file_exists "$DATA_EXTRACTOR_WHL_FILE" "WHL package"
+    check_file_exists "$DATA_EXTRACTOR_WHL_FILE" "Extractor WHL package"
     if [ $? -ne 0 ]; then
-        update_version_status "$step_number" "$stage_name" "FAILED" "WHL package file not found"
+        update_version_status "$step_number" "Extractor WHL Install" "FAILED"
         return 1
     fi
 
-    execute_command "pip install $DATA_EXTRACTOR_WHL_FILE" "Installing $DATA_EXTRACTOR_WHL_FILE" "$step_number" "$stage_name"
+    execute_command "pip install $DATA_EXTRACTOR_WHL_FILE" "Installing $DATA_EXTRACTOR_WHL_FILE"
     local status=$?
     
+    if [ $status -eq 0 ]; then
+        update_version_status "$step_number" "Extractor WHL Install" "COMPLETED"
+    else
+        update_version_status "$step_number" "Extractor WHL Install" "FAILED"
+    fi
+    
     local duration=$(( SECONDS - start_time ))
-    STEP_TIMES[0]=$duration
+    STEP_TIMES[$((step_number-1))]=$duration
     log_info "Step $step_number completed in $duration seconds"
     return $status
 }
 
 # Function to install transformer WHL package
 install_transformer_whl_package() {
-    local step_number="4"
-    local stage_name="${STAGE_NAMES[$((step_number-2))]}"  # Adjusted index
-    show_progress "$step_number" "$stage_name"
+    local step_number="$1"
+    show_progress "$step_number" "Installing $DATA_TRANSFORMER_WHL_FILE package"
 
     # Start timing
     local start_time=$SECONDS
 
     # Check if WHL file exists
-    check_file_exists "$DATA_TRANSFORMER_WHL_FILE" "WHL package"
+    check_file_exists "$DATA_TRANSFORMER_WHL_FILE" "Transformer WHL package"
     if [ $? -ne 0 ]; then
-        update_version_status "$step_number" "$stage_name" "FAILED" "WHL package file not found"
+        update_version_status "$step_number" "Transformer WHL Install" "FAILED"
         return 1
     fi
 
-    execute_command "pip install $DATA_TRANSFORMER_WHL_FILE" "Installing $DATA_TRANSFORMER_WHL_FILE" "$step_number" "$stage_name"
+    execute_command "pip install $DATA_TRANSFORMER_WHL_FILE" "Installing $DATA_TRANSFORMER_WHL_FILE"
     local status=$?
     
+    if [ $status -eq 0 ]; then
+        update_version_status "$step_number" "Transformer WHL Install" "COMPLETED"
+    else
+        update_version_status "$step_number" "Transformer WHL Install" "FAILED"
+    fi
+    
     local duration=$(( SECONDS - start_time ))
-    STEP_TIMES[3]=$duration
+    STEP_TIMES[$((step_number-1))]=$duration
     log_info "Step $step_number completed in $duration seconds"
     return $status
 }
 
-# Function to process single project (extraction, data loading, input SQL)
-process_single_project() {
+# Function to execute data extraction for a single project
+execute_data_extractor_for_project() {
     local project_id="$1"
-    local step_number="3"
-    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
+    local step_number="$2"
+    local config_path="./extraction_utility/env/${project_id}/config.ini"
     
-    log_info "Processing project: $project_id"
-    
+    log_info "Executing data extraction for project: $project_id"
+
+    # Check if config file exists
+    check_file_exists "$config_path" "Config file for $project_id"
+    if [ $? -ne 0 ]; then
+        update_version_status "$step_number" "Extraction-$project_id" "FAILED"
+        return 1
+    fi
+
     # Archive data files before extraction
     archive_data_files "data_output"
     
-    # Update project config and execute extraction
-    log_info "Executing data extraction for project: $project_id"
-    execute_command "python3 -m extraction_utility.info_schema --project-id \"$project_id\"" "extraction_utility/info_schema.py execution for $project_id"
-    local status1=$?
+    # Execute info_schema extraction
+    execute_command "python3 -m extraction_utility.info_schema --config-path \"$config_path\" --project-id \"$project_id\"" "Info schema extraction for $project_id"
+    local status=$?
     
-    if [ $status1 -eq 0 ]; then
-        execute_command "python3 -m extraction_utility.logs --project-id \"$project_id\"" "extraction_utility/logs.py execution for $project_id"
-        local status2=$?
-        
-        if [ $status2 -eq 0 ]; then
-            # Data loading to PostgreSQL
-            log_info "Loading data to PostgreSQL for project: $project_id"
-            execute_command "python3 -m postgres_utility.loadDataToPostgres --config-path \"$DATA_EXTRACTOR_CONFIG_PATH\" --project-id \"$project_id\" --version-id \"$VERSION_ID\"" "postgres_utility/loadDataToPostgres.py execution for $project_id"
-            local status3=$?
-            
-            if [ $status3 -eq 0 ]; then
-                # Run input SQL scripts
-                log_info "Running input SQL scripts for project: $project_id"
-                execute_command "python3 -m postgres_utility.run_sql_scripts input --config-path \"$DATA_TRANSFORMATION_CONFIG_PATH\" --project-id \"$project_id\" --version-id \"$VERSION_ID\"" "postgres_utility/run_sql_scripts.py input mode execution for $project_id"
-                local status4=$?
-                
-                if [ $status4 -eq 0 ]; then
-                    # Append project ID to version master
-                    python3 -c "
-from extraction_utility.version_master import append_pipeline_project_id
-append_pipeline_project_id('$project_id')
-" 2>/dev/null || log_warning "Failed to append project ID to version master"
-                    
-                    log_info "Successfully completed processing for project: $project_id"
-                    return 0
-                else
-                    log_error "Input SQL scripts failed for project: $project_id"
-                    return $status4
-                fi
-            else
-                log_error "Data loading failed for project: $project_id"
-                return $status3
-            fi
-        else
-            log_error "Logs extraction failed for project: $project_id"
-            return $status2
-        fi
-    else
-        log_error "Info schema extraction failed for project: $project_id"
-        return $status1
+    if [ $status -ne 0 ]; then
+        update_version_status "$step_number" "Extraction-$project_id" "FAILED"
+        return $status
     fi
+
+    # Execute logs extraction
+    execute_command "python3 -m extraction_utility.logs --config-path \"$config_path\" --project-id \"$project_id\"" "Logs extraction for $project_id"
+    status=$?
+
+    if [ $status -eq 0 ]; then
+        update_version_status "$step_number" "Extraction-$project_id" "COMPLETED"
+        log_info "Data extraction completed for project: $project_id"
+    else
+        update_version_status "$step_number" "Extraction-$project_id" "FAILED"
+    fi
+
+    return $status
 }
 
-# Function to execute data extraction and loading loop
-execute_project_loop() {
-    local step_number="3"
-    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
-    show_progress "$step_number" "$stage_name"
+# Function to execute data loading for a single project
+execute_dataload_for_project() {
+    local project_id="$1"
+    local step_number="$2"
+    local config_path="./extraction_utility/env/${project_id}/config.ini"
+    
+    log_info "Executing data loading for project: $project_id"
+
+    execute_command "python3 -m postgres_utility.loadDataToPostgres --config-path \"$config_path\" --project-id \"$project_id\" --version-id \"$VERSION_ID\"" "Load data for $project_id"
+    local status=$?
+
+    if [ $status -eq 0 ]; then
+        update_version_status "$step_number" "Load-$project_id" "COMPLETED"
+        log_info "Data loading completed for project: $project_id"
+    else
+        update_version_status "$step_number" "Load-$project_id" "FAILED"
+    fi
+
+    return $status
+}
+
+# Function to execute input SQL scripts for a single project
+execute_input_sql_for_project() {
+    local project_id="$1"
+    local step_number="$2"
+    
+    log_info "Executing input SQL scripts for project: $project_id"
+
+    execute_command "python3 -m postgres_utility.run_sql_scripts input --config-path \"$DATA_TRANSFORMATION_CONFIG_PATH\" --project-id \"$project_id\" --version-id \"$VERSION_ID\"" "Run input SQL for $project_id"
+    local status=$?
+
+    if [ $status -eq 0 ]; then
+        update_version_status "$step_number" "InputSQL-$project_id" "COMPLETED"
+        append_pipeline_project_id "$project_id"
+        log_info "Input SQL scripts completed for project: $project_id"
+    else
+        update_version_status "$step_number" "InputSQL-$project_id" "FAILED"
+    fi
+
+    return $status
+}
+
+# Function to process all projects (data extraction, loading, and input SQL)
+process_all_projects() {
+    local step_number="$1"
+    show_progress "$step_number" "Processing all projects: $PROJECT_IDS"
 
     # Start timing
     local start_time=$SECONDS
     
-    # Convert PROJECT_IDS to array
+    # Convert comma-separated project IDs to array
     IFS=',' read -ra PROJECT_ARRAY <<< "$PROJECT_IDS"
     
-    # Process each project
+    local total_projects=${#PROJECT_ARRAY[@]}
+    local current_project=1
+    
     for project_id in "${PROJECT_ARRAY[@]}"; do
-        project_id=$(echo "$project_id" | xargs)  # Trim whitespace
-        log_info "Starting processing for project: $project_id"
+        # Trim whitespace
+        project_id=$(echo "$project_id" | xargs)
         
-        process_single_project "$project_id"
-        local status=$?
+        log_info "Processing project $current_project of $total_projects: $project_id"
         
-        if [ $status -ne 0 ]; then
-            log_error "Failed processing project: $project_id"
-            update_version_status "$step_number" "$stage_name" "FAILED" "Project processing failed for $project_id"
-            return $status
+        # Execute data extraction
+        execute_data_extractor_for_project "$project_id" "$step_number"
+        if [ $? -ne 0 ]; then
+            log_error "Data extraction failed for project: $project_id"
+            return 1
         fi
+        
+        # Execute data loading
+        execute_dataload_for_project "$project_id" "$step_number"
+        if [ $? -ne 0 ]; then
+            log_error "Data loading failed for project: $project_id"
+            return 1
+        fi
+        
+        # Execute input SQL scripts
+        execute_input_sql_for_project "$project_id" "$step_number"
+        if [ $? -ne 0 ]; then
+            log_error "Input SQL scripts failed for project: $project_id"
+            return 1
+        fi
+        
+        log_info "Successfully processed project: $project_id"
+        current_project=$((current_project + 1))
     done
-    
-    update_version_status "$step_number" "$stage_name" "COMPLETED" ""
-    
+
+    # Calculate and store execution time
     local duration=$(( SECONDS - start_time ))
-    STEP_TIMES[2]=$duration
+    STEP_TIMES[$((step_number-1))]=$duration
     log_info "Step $step_number completed in $duration seconds"
-    
+    log_info "All projects processed successfully"
+
     return 0
 }
 
 # Function to execute JAR file
 execute_jar() {
-    local step_number="5"
-    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
-    show_progress "$step_number" "$stage_name"
+    local step_number="$1"
+    show_progress "$step_number" "Executing JAR file: $JAR_FILE"
 
     # Start timing
     local start_time=$SECONDS
@@ -676,17 +677,24 @@ execute_jar() {
     # Check if file exists
     check_file_exists "$JAR_FILE" "JAR file"
     if [ $? -ne 0 ]; then
-        update_version_status "$step_number" "$stage_name" "FAILED" "JAR file not found"
+        update_version_status "$step_number" "JAR Execution" "FAILED"
         return 1
     fi
 
-    # Execute the command with version ID parameter
-    execute_command "java $JAR_MEMORY $JAR_PARAMS -Dversion.id=$VERSION_ID -jar $JAR_FILE" "JAR execution with version $VERSION_ID" "$step_number" "$stage_name"
+    # Execute the command with version ID
+    local jar_command="java $JAR_MEMORY $JAR_PARAMS -Dversion.id=$VERSION_ID -jar $JAR_FILE"
+    execute_command "$jar_command" "JAR execution"
     local status=$?
+
+    if [ $status -eq 0 ]; then
+        update_version_status "$step_number" "JAR Execution" "COMPLETED"
+    else
+        update_version_status "$step_number" "JAR Execution" "FAILED"
+    fi
 
     # Calculate and store execution time
     local duration=$(( SECONDS - start_time ))
-    STEP_TIMES[4]=$duration
+    STEP_TIMES[$((step_number-1))]=$duration
     log_info "Step $step_number completed in $duration seconds"
 
     return $status
@@ -694,20 +702,24 @@ execute_jar() {
 
 # Function to execute output SQL scripts
 execute_output_sql_scripts() {
-    local step_number="6"
-    local stage_name="${STAGE_NAMES[$((step_number-1))]}"
-    show_progress "$step_number" "$stage_name"
+    local step_number="$1"
+    show_progress "$step_number" "Executing output SQL scripts"
 
     # Start timing
     local start_time=$SECONDS
 
-    # Execute the command with version tracking for all projects combined
-    execute_command "python3 -m postgres_utility.run_sql_scripts output --config-path \"$DATA_TRANSFORMATION_CONFIG_PATH\" --project-ids \"$PROJECT_IDS\" --version-id \"$VERSION_ID\"" "postgres_utility/run_sql_scripts.py output mode execution for all projects" "$step_number" "$stage_name"
+    execute_command "python3 -m postgres_utility.run_sql_scripts output --config-path \"$DATA_TRANSFORMATION_CONFIG_PATH\" --project-ids \"$PROJECT_IDS\" --version-id \"$VERSION_ID\"" "Run output SQL scripts"
     local status=$?
+
+    if [ $status -eq 0 ]; then
+        update_version_status "$step_number" "Output SQL" "COMPLETED"
+    else
+        update_version_status "$step_number" "Output SQL" "FAILED"
+    fi
 
     # Calculate and store execution time
     local duration=$(( SECONDS - start_time ))
-    STEP_TIMES[5]=$duration
+    STEP_TIMES[$((step_number-1))]=$duration
     log_info "Step $step_number completed in $duration seconds"
 
     return $status
@@ -731,7 +743,7 @@ print_summary() {
         log_error "Status: FAILURE - Pipeline failed at step $failed_step"
     fi
 
-    log_info "Project IDs processed: $PROJECT_IDS"
+    log_info "Projects: $PROJECT_IDS"
     log_info "Version ID: $VERSION_ID"
     log_info "Start time: $START_TIME"
     log_info "End time: $end_time"
@@ -742,12 +754,14 @@ print_summary() {
     log_info ""
     log_info "STEP EXECUTION TIMES:"
 
-    # Step times
-    for i in {0..5}; do
+    local step_names=("Install Extractor WHL" "Install Transformer WHL" "Process All Projects" "Execute JAR" "Execute Output SQL")
+    
+    for i in "${!STEP_TIMES[@]}"; do
         if [ -n "${STEP_TIMES[$i]}" ]; then
             local mins=$(( ${STEP_TIMES[$i]} / 60 ))
             local secs=$(( ${STEP_TIMES[$i]} % 60 ))
-            log_info "Step $((i+1)): $mins minutes and $secs seconds"
+            local step_name="${step_names[$i]:-Step $((i+1))}"
+            log_info "$step_name: $mins minutes and $secs seconds"
         fi
     done
 
@@ -756,10 +770,7 @@ print_summary() {
     log_info "========================================================"
     
     # Close version master connection
-    python3 -c "
-from extraction_utility.version_master import close_version_master_connection
-close_version_master_connection()
-" 2>/dev/null || true
+    close_version_master
 }
 
 # =============================================================================
@@ -775,6 +786,16 @@ parse_arguments() {
             -v|--verbose)
                 VERBOSE=true
                 log_info "Verbose mode enabled"
+                ;;
+            -p|--project-ids)
+                if [ -n "$2" ]; then
+                    PROJECT_IDS="$2"
+                    log_info "Using project IDs: $PROJECT_IDS"
+                    shift
+                else
+                    log_error "Error: --project-ids requires a comma-separated list argument"
+                    exit 1
+                fi
                 ;;
             -e|--venv)
                 if [ -n "$2" ]; then
@@ -793,16 +814,6 @@ parse_arguments() {
             -s|--skip-venv)
                 SKIP_VENV=true
                 log_info "Skipping virtual environment setup"
-                ;;
-            -p|--project-ids)
-                if [ -n "$2" ]; then
-                    PROJECT_IDS="$2"
-                    log_info "Using project IDs: $PROJECT_IDS"
-                    shift
-                else
-                    log_error "Error: --project-ids requires comma-separated project IDs"
-                    exit 1
-                fi
                 ;;
             *)
                 log_error "Unknown option: $1"
@@ -824,8 +835,9 @@ main() {
 
     # Initialize log file
     echo "Pipeline Execution Log - $START_TIME" > "$LOG_FILE"
-    log_info "Starting pipeline execution with project IDs: $PROJECT_IDS"
+    log_info "Starting pipeline execution"
     log_info "Log file: $LOG_FILE"
+    log_info "Projects to process: $PROJECT_IDS"
 
     if [ "$VERBOSE" = true ]; then
         log_info "Verbose logging enabled"
@@ -844,7 +856,7 @@ main() {
     local exit_status=0
 
     # Step 1: Install Extractor WHL package
-    install_extractor_whl_package
+    install_extractor_whl_package $current_step
     exit_status=$?
     if [ $exit_status -ne 0 ]; then
         log_error "Step $current_step failed with exit code $exit_status"
@@ -853,8 +865,26 @@ main() {
     fi
     current_step=$((current_step + 1))
 
-    # Step 2: Initialize version master and get version ID
+    # Step 2: Install Transformer WHL package
+    install_transformer_whl_package $current_step
+    exit_status=$?
+    if [ $exit_status -ne 0 ]; then
+        log_error "Step $current_step failed with exit code $exit_status"
+        print_summary 1 $current_step
+        exit 1
+    fi
+    current_step=$((current_step + 1))
+
+    # Initialize version master after WHL packages are installed
     initialize_version_master
+    if [ $? -ne 0 ]; then
+        log_error "Failed to initialize version master"
+        print_summary 1 "Version Master Initialization"
+        exit 1
+    fi
+
+    # Step 3: Process all projects (data extraction, loading, and input SQL)
+    process_all_projects $current_step
     exit_status=$?
     if [ $exit_status -ne 0 ]; then
         log_error "Step $current_step failed with exit code $exit_status"
@@ -863,8 +893,8 @@ main() {
     fi
     current_step=$((current_step + 1))
 
-    # Step 3: Execute project loop (extraction, data loading, input SQL for each project)
-    execute_project_loop
+    # Step 4: Execute JAR file
+    execute_jar $current_step
     exit_status=$?
     if [ $exit_status -ne 0 ]; then
         log_error "Step $current_step failed with exit code $exit_status"
@@ -873,28 +903,8 @@ main() {
     fi
     current_step=$((current_step + 1))
 
-    # Step 4: Install Transformer WHL package
-    install_transformer_whl_package
-    exit_status=$?
-    if [ $exit_status -ne 0 ]; then
-        log_error "Step $current_step failed with exit code $exit_status"
-        print_summary 1 $current_step
-        exit 1
-    fi
-    current_step=$((current_step + 1))
-
-    # Step 5: Execute JAR file (for all projects combined)
-    execute_jar
-    exit_status=$?
-    if [ $exit_status -ne 0 ]; then
-        log_error "Step $current_step failed with exit code $exit_status"
-        print_summary 1 $current_step
-        exit 1
-    fi
-    current_step=$((current_step + 1))
-
-    # Step 6: Run output SQL scripts (for all projects combined)
-    execute_output_sql_scripts
+    # Step 5: Execute output SQL scripts
+    execute_output_sql_scripts $current_step
     exit_status=$?
     if [ $exit_status -ne 0 ]; then
         log_error "Step $current_step failed with exit code $exit_status"
@@ -903,7 +913,7 @@ main() {
     fi
 
     # Print successful summary
-    print_summary 0 6
+    print_summary 0 "All Steps"
     exit 0
 }
 
