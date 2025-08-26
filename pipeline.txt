@@ -233,13 +233,17 @@ archive_data_files() {
 initialize_version_master() {
     log_info "Initializing version master for projects: $PROJECT_IDS"
     
+    # Convert comma-separated string to Python list format
     VERSION_ID=$(python3 -c "
 from extraction_utility.version_master import initialize_pipeline_version
 try:
-    vid = initialize_pipeline_version('$PROJECT_IDS')
+    project_list = [p.strip() for p in '$PROJECT_IDS'.split(',')]
+    vid = initialize_pipeline_version(project_list)
     print(vid if vid else '')
 except Exception as e:
-    print('')
+    import traceback
+    print('', file=__import__('sys').stderr)
+    traceback.print_exc(file=__import__('sys').stderr)
 " 2>/dev/null)
 
     if [ -z "$VERSION_ID" ]; then
@@ -851,6 +855,14 @@ main() {
         exit 1
     fi
 
+    # Initialize version master early (before any steps that use it)
+    initialize_version_master
+    if [ $? -ne 0 ]; then
+        log_error "Failed to initialize version master"
+        print_summary 1 "Version Master Initialization"
+        exit 1
+    fi
+
     # Track current step for summary
     local current_step=1
     local exit_status=0
@@ -874,14 +886,6 @@ main() {
         exit 1
     fi
     current_step=$((current_step + 1))
-
-    # Initialize version master after WHL packages are installed
-    initialize_version_master
-    if [ $? -ne 0 ]; then
-        log_error "Failed to initialize version master"
-        print_summary 1 "Version Master Initialization"
-        exit 1
-    fi
 
     # Step 3: Process all projects (data extraction, loading, and input SQL)
     process_all_projects $current_step
