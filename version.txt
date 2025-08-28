@@ -5,6 +5,7 @@ from google.cloud.sql.connector import Connector
 import pg8000
 from .db_config import get_db_url_and_schema, get_instance_id
 import logging
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -100,7 +101,7 @@ class VersionMaster:
             cursor = self.conn.cursor()
             _, _, _, schema, _, _, _ = get_db_url_and_schema()
 
-            query = f"SELECT MAX(version_id) FROM {schema}.version_master"
+            query = f"SELECT version_id FROM {schema}.version_master ORDER BY version_id DESC LIMIT 1"
             cursor.execute(query)
             result = cursor.fetchone()
             cursor.close()
@@ -242,12 +243,11 @@ class VersionMaster:
                 self.conn.rollback()
             return False
 
-    def mark_step_completed(self, step_number, stage_name):
-        status = 'IN_PROGRESS' if step_number < 7 else 'COMPLETED'
+    def mark_step_completed(self, stage_name, status):
         return self.update_status(stage_name, status)
 
-    def mark_step_failed(self, step_number, stage_name):
-        return self.update_status(stage_name, 'FAILED')
+    def mark_step_failed(self, stage_name, status):
+        return self.update_status(stage_name, status)
 
 
 # Global instance
@@ -272,36 +272,121 @@ def append_pipeline_project_id(project_id):
     vm = get_version_master()
     return vm.append_project_id(project_id)
 
-def mark_pipeline_step_completed(step_number, stage_name):
+def mark_pipeline_step_completed(stage_name, status):
     """Mark a pipeline step as completed with step tracking"""
     vm = get_version_master()
-    return vm.mark_step_completed(step_number, stage_name)
+    return vm.mark_step_completed(stage_name, status)
 
-def mark_pipeline_step_failed(step_number, stage_name):
+def mark_pipeline_step_failed(stage_name, status):
     """Mark a pipeline step as failed with step tracking"""
     vm = get_version_master()
-    return vm.mark_step_failed(step_number, stage_name)
-
-def get_current_version_id():
-    """Get just the current version ID"""
-    vm = get_version_master()
-    version_id, _, _ = vm.get_current_version_info()
-    return version_id
-
+    return vm.mark_step_failed(stage_name, status)
 
 def close_version_master_connection():
     vm = get_version_master()
     vm.close_connection()
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Version Master Utility")
-    parser.add_argument("--config-path", default=None, help="Config file path")
-    parser.add_argument("--get-version", action="store_true", help="Get the current running version ID")
-    args = parser.parse_args()
-
-    if args.get_version:
-        version_id = get_current_version_id()
+# CLI Functions
+def cli_initialize_version(args):
+    """CLI function to initialize version"""
+    try:
+        if args.config_path:
+            os.environ['CONFIG_PATH'] = args.config_path
+        
+        project_ids = [pid.strip() for pid in args.project_ids.split(',')]
+        version_id = initialize_pipeline_version(project_ids)
+        
         if version_id:
-            print(version_id)
+            print(version_id)  # Output version ID for bash script to capture
+            return 0
         else:
-            exit(1)
+            return 1
+    except Exception as e:
+        logger.error(f"Error initializing version: {e}")
+        return 1
+
+def cli_update_status(args):
+    """CLI function to update status"""
+    try:
+        if args.status == 'FAILED':
+            result = mark_pipeline_step_failed(args.stage, args.status)
+        else:
+            result = mark_pipeline_step_completed(args.stage, args.status)
+        
+        return 0 if result else 1
+    except Exception as e:
+        logger.error(f"Error updating status: {e}")
+        return 1
+
+def cli_append_project_id(args):
+    """CLI function to append project ID"""
+    try:
+        result = append_pipeline_project_id(args.project_id)
+        return 0 if result else 1
+    except Exception as e:
+        logger.error(f"Error appending project ID: {e}")
+        return 1
+
+def cli_close_connection(args):
+    """CLI function to close connection"""
+    try:
+        close_version_master_connection()
+        return 0
+    except Exception as e:
+        logger.error(f"Error closing connection: {e}")
+        return 1
+
+def cli_get_version(args):
+    """CLI function to get current version ID"""
+    try:
+        vm = get_version_master()
+        if vm.version_id:
+            print(vm.version_id)
+            return 0
+        else:
+            return 1
+    except Exception as e:
+        logger.error(f"Error getting version: {e}")
+        return 1
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Version Master CLI Utility")
+    
+    # Common arguments
+    parser.add_argument("--config-path", help="Config file path")
+    
+    # Create subparsers for different commands
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # Initialize version command
+    init_parser = subparsers.add_parser('init', help='Initialize version')
+    init_parser.add_argument('--project-ids', required=True, help='Comma-separated project IDs')
+    init_parser.set_defaults(func=cli_initialize_version)
+    
+    # Update status command
+    status_parser = subparsers.add_parser('update-status', help='Update pipeline status')
+    status_parser.add_argument('--stage', required=True, help='Stage name')
+    status_parser.add_argument('--status', required=True, choices=['RUNNING', 'IN_PROGRESS', 'COMPLETED', 'FAILED'], help='Status')
+    status_parser.set_defaults(func=cli_update_status)
+    
+    # Append project ID command
+    append_parser = subparsers.add_parser('append-project', help='Append project ID')
+    append_parser.add_argument('--project-id', required=True, help='Project ID to append')
+    append_parser.set_defaults(func=cli_append_project_id)
+    
+    # Close connection command
+    close_parser = subparsers.add_parser('close', help='Close version master connection')
+    close_parser.set_defaults(func=cli_close_connection)
+    
+    # Get version command
+    get_parser = subparsers.add_parser('get-version', help='Get current version ID')
+    get_parser.set_defaults(func=cli_get_version)
+    
+    args = parser.parse_args()
+    
+    if hasattr(args, 'func'):
+        exit_code = args.func(args)
+        exit(exit_code)
+    else:
+        parser.print_help()
+        exit(1)
