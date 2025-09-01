@@ -10,10 +10,10 @@ import pkg_resources
 def get_db_connection():
     try:
         instance_connection_name, database, iam_user, schema, input_dir, ip_type = get_db_url_and_schema()
-        
+
         # Initialize Cloud SQL Python Connector
         connector = Connector()
-        
+
         # Get connection using IAM authentication
         conn = connector.connect(
             instance_connection_name,
@@ -28,18 +28,20 @@ def get_db_connection():
         print(f"Error: Unable to connect to the database. {e}")
         return None, None
 
-# Read and execute SQL file
-def execute_sql_file(cursor, file_path, schema, instance_id):
+# Read and execute SQL file - now raises exception on failure
+def execute_sql_file(cursor, file_path, schema, instance_id, version):
     with open(file_path, 'r') as file:
         sql_query = file.read()
-        
-    sql_query = sql_query.format(schema=schema, instance=instance_id) 
-    
+
+    sql_query = sql_query.format(schema=schema, instance=instance_id, version=version)
+
     try:
         cursor.execute(sql_query)
         print(f"Successfully executed: {file_path}")
     except Exception as e:
         print(f"Error executing {file_path}: {e}")
+        # Re-raise the exception to stop execution
+        raise e
 
 def get_ordered_sql_files(folder_path):
     """Get SQL files from folder: number-prefixed files first (numeric sort), then others (alphabetical)"""
@@ -70,28 +72,32 @@ def get_ordered_sql_files(folder_path):
 def process_sql_files(folder_path, schema, instance_id, version):
     conn, connector = get_db_connection()
     if conn is None:
-        return
-    
+        return False  # Return False to indicate failure
+
     cursor = conn.cursor()
 
     try:
         sql_files = get_ordered_sql_files(folder_path)
-        
+
         if not sql_files:
             print("No SQL files to process.")
-            return
-        
+            return True  # Return True as this is not an error condition
+
         for filename in sql_files:
             file_path = os.path.join(folder_path, filename)
             print(f"Executing script: {filename}")
+            # This will raise an exception if the SQL fails, stopping execution
             execute_sql_file(cursor, file_path, schema, instance_id, version)
-        
+
         conn.commit()
         print(f"Successfully executed {len(sql_files)} SQL files")
-        
+        return True  # Return True to indicate success
+
     except Exception as e:
         print(f"Error processing SQL files: {e}")
+        print("Stopping execution due to SQL failure.")
         conn.rollback()
+        return False  # Return False to indicate failure
     finally:
         cursor.close()
         conn.close()
@@ -126,28 +132,45 @@ def main():
 
     if args.config_path:
         os.environ["CONFIG_PATH"] = args.config_path
-    
+
     version = args.version_id
-    
-    instance_connection_name, database, iam_user, schema, input_dir, ip_type, days = get_db_url_and_schema()
+
+    instance_connection_name, database, iam_user, schema, input_dir, ip_type = get_db_url_and_schema()
     instance_id = get_instance_id()
 
     base_path = os.path.dirname(os.path.abspath(__file__))
     sql_dirs = get_sql_directories(base_path)
 
+    success = True  # Track overall success
+
     if args.mode == "input":
         input_sql_dir = sql_dirs['input_sql_dir']
         if not os.path.exists(input_sql_dir):
+            print(f"Input SQL directory does not exist: {input_sql_dir}")
             exit(1)
-        process_sql_files(input_sql_dir, schema, instance_id, version)
+        success = process_sql_files(input_sql_dir, schema, instance_id, version)
+
     elif args.mode == "output":
         output_sql_dir1 = sql_dirs['output_sql_dir1']
         output_sql_dir2 = sql_dirs['output_sql_dir2']
         output_sql_dir3 = sql_dirs['output_sql_dir3']
+
         for sql_dir in [output_sql_dir1, output_sql_dir2, output_sql_dir3]:
             if not os.path.exists(sql_dir):
+                print(f"Output SQL directory does not exist: {sql_dir}, skipping...")
                 continue
-            process_sql_files(sql_dir, schema, instance_id, version)
+
+            success = process_sql_files(sql_dir, schema, instance_id, version)
+            if not success:
+                print(f"Failed processing directory: {sql_dir}")
+                break  # Stop processing remaining directories if one fails
+
+    # Exit with appropriate code
+    if not success:
+        print("Script execution failed.")
+        exit(1)
+    else:
+        print("All scripts executed successfully.")
 
 if __name__ == "__main__":
     main()
