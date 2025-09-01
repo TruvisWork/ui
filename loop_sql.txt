@@ -1,0 +1,33 @@
+DO $$
+DECLARE
+    tbl text;
+    col text := 'your_column';         -- the column to check
+    default_val text := 'your_value';  -- the default value
+BEGIN
+    -- loop through the tables you care about
+    FOR tbl IN 
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public'
+          AND table_name IN ('table1', 'table2', 'table3')  -- your list of tables
+    LOOP
+        -- check if column exists in this table
+        IF NOT EXISTS (
+            SELECT 1 
+            FROM information_schema.columns
+            WHERE table_name = tbl
+              AND column_name = col
+              AND table_schema = 'public'
+        ) THEN
+            -- add the column
+            EXECUTE format('ALTER TABLE public.%I ADD COLUMN %I text', tbl, col);
+            
+            -- update with default value
+            EXECUTE format('UPDATE public.%I SET %I = %L', tbl, col, default_val);
+            
+            -- optional: set default for future inserts
+            EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I SET DEFAULT %L', tbl, col, default_val);
+        END IF;
+    END LOOP;
+END;
+$$;
