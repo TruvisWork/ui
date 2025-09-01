@@ -1,33 +1,99 @@
 DO $$
 DECLARE
     tbl text;
-    col text := 'your_column';         -- the column to check
-    default_val text := 'your_value';  -- the default value
+    col text := 'version_id'; 
+    default_val bigint := 1;   
+    row_count bigint;
 BEGIN
-    -- loop through the tables you care about
+    -----------------------------------------------------------------
+    -- CREATE version_master table
+    -----------------------------------------------------------------
+    BEGIN
+        RAISE NOTICE 'Creating table version_master if not exists...';
+        CREATE TABLE IF NOT EXISTS version_master (
+            version_id BIGINT PRIMARY KEY,
+            project_ids TEXT NOT NULL,
+            extraction_date TIMESTAMP NOT NULL,
+            status VARCHAR(20) NOT NULL CHECK (status IN ('RUNNING', 'IN_PROGRESS', 'COMPLETED', 'FAILED')),
+            stage_name VARCHAR(100) NOT NULL,
+            start_date DATE NOT NULL,
+            end_date DATE NOT NULL
+        );
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Error creating version_master: %', SQLERRM;
+    END;
+
+    -----------------------------------------------------------------
+    -- CREATE indexes on version_master
+    -----------------------------------------------------------------
+    BEGIN
+        RAISE NOTICE 'Creating indexes on version_master if not exists...';
+        CREATE INDEX IF NOT EXISTS idx_version_master_extraction_date 
+            ON version_master(extraction_date DESC);
+        CREATE INDEX IF NOT EXISTS idx_version_master_status 
+            ON version_master(status);
+        CREATE INDEX IF NOT EXISTS idx_version_master_project_ids 
+            ON version_master(project_ids);
+        CREATE INDEX IF NOT EXISTS idx_version_master_version_id 
+            ON version_master(version_id DESC);
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Error creating indexes on version_master: %', SQLERRM;
+    END;
+
+    -----------------------------------------------------------------
+    -- INSERT into version_master
+    -----------------------------------------------------------------
+    BEGIN
+        RAISE NOTICE 'Inserting initial row into version_master...';
+        INSERT INTO version_master (version_id, project_ids, extraction_date, status, stage_name, start_date, end_date)
+        VALUES (1, 'PROJECT123', now(), 'COMPLETED', 'OUTPUT_SQL', '2025-07-31', '2025-08-31');
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'Error inserting into version_master: %', SQLERRM;
+    END;
+
+    -----------------------------------------------------------------
+    -- LOOP through metadata tables
+    -----------------------------------------------------------------
     FOR tbl IN 
         SELECT table_name 
         FROM information_schema.tables 
         WHERE table_schema = 'public'
-          AND table_name IN ('table1', 'table2', 'table3')  -- your list of tables
+          AND table_name IN ('column_metadata', 'create_table_workload_rule_master',
+                             'external_table_metadata', 'function_metadata',
+                             'indices_metadata', 'macro_metadata',
+                             'partition_metadata', 'procedure_metadata',
+                             'query_metadata')
     LOOP
-        -- check if column exists in this table
-        IF NOT EXISTS (
-            SELECT 1 
-            FROM information_schema.columns
-            WHERE table_name = tbl
-              AND column_name = col
-              AND table_schema = 'public'
-        ) THEN
-            -- add the column
-            EXECUTE format('ALTER TABLE public.%I ADD COLUMN %I text', tbl, col);
-            
-            -- update with default value
-            EXECUTE format('UPDATE public.%I SET %I = %L', tbl, col, default_val);
-            
-            -- optional: set default for future inserts
-            EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I SET DEFAULT %L', tbl, col, default_val);
-        END IF;
+        BEGIN
+            RAISE NOTICE 'Processing table: %', tbl;
+
+            IF NOT EXISTS (
+                SELECT 1 
+                FROM information_schema.columns
+                WHERE table_name = tbl
+                  AND column_name = col
+                  AND table_schema = 'public'
+            ) THEN
+                RAISE NOTICE 'Column "%" not found in table "%", adding...', col, tbl;
+
+                EXECUTE format('ALTER TABLE public.%I ADD COLUMN %I bigint', tbl, col);
+
+                EXECUTE format('SELECT count(*) FROM public.%I', tbl) INTO row_count;
+
+                IF row_count > 0 THEN
+                    RAISE NOTICE 'Updating % rows in table "%" with default value %', row_count, tbl, default_val;
+                    EXECUTE format('UPDATE public.%I SET %I = %s', tbl, col, default_val);
+                ELSE
+                    RAISE NOTICE 'Table "%" has no rows, skipping update', tbl;
+                END IF;
+            ELSE
+                RAISE NOTICE 'Column "%" already exists in table "%", skipping...', col, tbl;
+            END IF;
+
+        EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'Error in table "%": %', tbl, SQLERRM;
+        END;
     END LOOP;
+
 END;
 $$;
