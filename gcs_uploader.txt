@@ -1,0 +1,104 @@
+import argparse
+import glob
+import os
+import sys
+from google.cloud import storage
+from db_config import get_gcs_bucket
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class GcsUploader:
+    def __init__(self):
+        self.project_id = None
+        self.region = None
+        self.bucket_name = None
+        self.service_account_file = None
+        self.input_dir = None
+        self.client = None
+        self.bucket = None
+
+    def get_config(self):
+        try:
+            project_id, region, bucket_name, service_account_file, input_dir = get_gcs_bucket()
+            self.project_id = project_id
+            self.region = region
+            self.bucket_name = bucket_name
+            self.service_account_file = service_account_file
+            self.input_dir = input_dir
+            self.client = storage.Client.from_service_account_json(self.service_account_file)
+            self.bucket = self.client.bucket(self.bucket_name)
+        except Exception as e:
+            logger.error(f"Unable to read config: {e}")
+            raise
+
+    def files_to_gcs(self):
+        try:
+            destination_folder = f"extraction-{self.project_id}"
+            uploaded_count = 0
+            total_files = 0
+
+            parquet_files = glob.glob(os.path.join(self.input_dir, "*.parquet"))
+            total_files = len(parquet_files)
+
+            if total_files == 0:
+                logger.warning(f"No parquet files found in {self.input_dir}")
+                return True
+
+            for file_path in parquet_files:
+                try:
+                    # Create blob name with the file name
+                    file_name = os.path.basename(file_path)
+                    blob_name = f"{destination_folder}/{file_name}"
+
+                    blob = self.bucket.blob(blob_name)
+                    blob.upload_from_filename(file_path)
+                    uploaded_count += 1
+                    logger.info(f"Uploaded {file_path} to gs://{self.bucket_name}/{blob_name}")
+                except Exception as e:
+                    logger.error(f"Failed to upload {file_path}: {e}")
+
+            logger.info(f"Successfully uploaded {uploaded_count}/{total_files} files")
+            return uploaded_count == total_files
+
+        except Exception as e:
+            logger.error(f"Failed to upload files to GCS: {e}")
+            raise
+
+    def upload_files(self):
+        """Main method to upload files"""
+        try:
+            self.get_config()
+            return self.files_to_gcs()
+        except Exception as e:
+            logger.error(f"Upload process failed: {e}")
+            return False
+
+
+def main(args):
+    uploader = GcsUploader()
+    success = uploader.upload_files()
+    return 0 if success else 1
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Files to GCS bucket CLI")
+
+    parser.add_argument("--config-path", help="Config file path")
+    parser.add_argument("--input-dir", help="Input directory containing parquet files")
+
+    # Set the function to call
+    parser.set_defaults(func=main)
+
+    args = parser.parse_args()
+
+    if args.config_path:
+        os.environ['CONFIG_PATH'] = args.config_path
+
+    if hasattr(args, 'func'):
+        exit_code = args.func(args)
+        sys.exit(exit_code)
+    else:
+        parser.print_help()
+        sys.exit(1)
