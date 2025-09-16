@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""
+Download Parquet files from GCS bucket to local directory.
+Integrates with existing BigQuery wrapper workflow.
+"""
+import argparse
+import glob
+import os
+import sys
+from pathlib import Path
+from google.cloud import storage
+from db_config import get_gcs_bucket
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class GcsDownloader:
+    def __init__(self):
+        self.project_id = None
+        self.region = None
+        self.bucket_name = None
+        self.service_account_file = None
+        self.output_dir = None
+        self.client = None
+        self.bucket = None
+
+    def get_config(self):
+        try:
+            project_id, region, bucket_name, service_account_file, output_dir = get_gcs_bucket()
+            self.project_id = project_id
+            self.region = region
+            self.bucket_name = bucket_name
+            self.service_account_file = service_account_file
+            self.output_dir = output_dir
+            self.client = storage.Client.from_service_account_json(self.service_account_file)
+            self.bucket = self.client.bucket(self.bucket_name)
+        except Exception as e:
+            logger.error(f"Unable to read config: {e}")
+            raise
+
+    def list_blobs_with_prefix(self, prefix):
+        try:
+            blobs = self.bucket.list_blobs(prefix=prefix)
+            blob_names = [blob.name for blob in blobs]
+            return blob_names
+        except Exception as e:
+            logger.error(f"Failed to list blobs: {e}")
+            raise
+
+    def download_file(self, blob_name, local_path):
+        try:
+            blob = self.bucket.blob(blob_name)
+            blob.download_to_filename(local_path)
+            logger.info(f"Downloaded {blob_name} to {local_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to download {blob_name}: {e}")
+            return False
+
+    def files_from_gcs(self, prefix=None, dry_run=False):
+        try:
+            source_folder = prefix or f"extraction-{self.project_id}"
+
+            Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+
+            blob_names = self.list_blobs_with_prefix(source_folder)
+
+            parquet_blobs = [name for name in blob_names if name.endswith('.parquet')]
+
+            if not parquet_blobs:
+                logger.warning(f"No parquet files found in gs://{self.bucket_name}/{source_folder}")
+                return True
+
+            logger.info(f"Found {len(parquet_blobs)} parquet files in gs://{self.bucket_name}/{source_folder}")
+
+            if dry_run:
+                logger.info("DRY RUN MODE - Files that would be downloaded:")
+                for blob_name in parquet_blobs:
+                    logger.info(f"  - {blob_name}")
+                return True
+
+            # Download each file
+            downloaded_count = 0
+            for blob_name in parquet_blobs:
+                try:
+                    filename = os.path.basename(blob_name)
+                    local_path = os.path.join(self.output_dir, filename)
+
+                    if self.download_file(blob_name, local_path):
+                        downloaded_count += 1
+
+                except Exception as e:
+                    logger.error(f"Failed to download {blob_name}: {e}")
+                    continue
+
+            logger.info(f"Download complete. {downloaded_count}/{len(parquet_blobs)} files downloaded successfully.")
+            return downloaded_count == len(parquet_blobs)
+
+        except Exception as e:
+            logger.error(f"Failed to download files from GCS: {e}")
+            raise
+
+    def download_files(self, prefix=None, dry_run=False):
+        """Main method to download files"""
+        try:
+            self.get_config()
+            return self.files_from_gcs(prefix=prefix, dry_run=dry_run)
+        except Exception as e:
+            logger.error(f"Download process failed: {e}")
+            return False
+
+
+def main(args):
+    downloader = GcsDownloader()
+
+    success = downloader.download_files()
+    return 0 if success else 1
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Download Parquet files from GCS bucket")
+
+    parser.add_argument("--config-path", help="Config file path")
+
+    parser.set_defaults(func=main)
+
+    args = parser.parse_args()
+
+    if args.config_path:
+        os.environ['CONFIG_PATH'] = args.config_path
+
+    if hasattr(args, 'func'):
+        exit_code = args.func(args)
+        sys.exit(exit_code)
+    else:
+        parser.print_help()
+        sys.exit(1)
