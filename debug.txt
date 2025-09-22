@@ -1,0 +1,35 @@
+from google.cloud import secretmanager
+import google.auth
+import logging
+
+# Enable detailed logging
+logging.basicConfig(level=logging.DEBUG)
+
+def debug_secret_access():
+    try:
+        # Check credentials
+        credentials, project = google.auth.default()
+        print(f"Using project: {project}")
+        print(f"Credentials type: {type(credentials)}")
+        
+        client = secretmanager.SecretManagerServiceClient()
+        
+        # Build resource name
+        name = f"projects/{project}/secrets/{SECRET_NAME}/versions/latest"
+        print(f"Requesting: {name}")
+        
+        # Attempt access
+        response = client.access_secret_version(request={"name": name})
+        print("SUCCESS: Secret accessed")
+        
+    except Exception as e:
+        print(f"ERROR: {e}")
+        print(f"Error type: {type(e)}")
+        
+        # Common error patterns
+        if "403" in str(e):
+            print("→ IAM permission issue")
+        elif "404" in str(e):
+            print("→ Secret or version not found")
+        elif "400" in str(e):
+            print("→ Invalid request format")
