@@ -1,0 +1,103 @@
+DROP TABLE IF EXISTS finops_report_user_wise_usage;
+CREATE TABLE finops_report_user_wise_usage AS
+  (WITH
+    user_table_access AS (
+    SELECT
+      default_database AS project_id,
+      user_id,
+      database_name,
+      schema_name,
+      table_name,
+      table_type,
+      COUNT(*) AS table_access_count
+    FROM
+      entity_relationship
+    WHERE
+      target_entity_type IN ('table',
+        'externalTable',
+        'view')
+    GROUP BY
+        default_database AS project_id,
+        user_id,
+        database_name,
+        schema_name,
+        table_name,
+        table_type),
+    table_owner AS (
+    SELECT
+      project_id,
+      user_id,
+      database_name,
+      schema_name,
+      table_name,
+      table_type,
+      table_access_count
+    FROM (
+      SELECT
+        project_id,
+        user_id,
+        database_name,
+        schema_name,
+        table_name,
+        table_type,
+        table_access_count,
+        ROW_NUMBER() OVER (PARTITION BY project_id, database_name, schema_name, table_name ORDER BY table_access_count DESC, user_id) AS rn
+      FROM
+        user_table_access
+    ) u_t_a
+    WHERE
+      u_t_a.rn = 1),
+  user_storage_size AS (
+    SELECT
+      project_id,
+      user_id,
+      SUM(t.tablesize)/1024 AS storage_size_in_gb
+    FROM
+      table_owner t_own
+    INNER JOIN
+      table_metadata t
+    ON
+      t_own.database_name = t.`database`
+      AND t_own.schema_name = t.`schema`
+      AND t_own.table_name = t.name
+    GROUP BY
+      1,2 )
+  ,user_slots as
+  (
+    SELECT
+      default_database as project_id,
+      user_name as user_id,
+      sum(hardware_util_ms) as slot_time_consumed,
+      count(distinct query_id) as query_count
+    FROM query_log
+    group by 1,2
+  )
+  ,user_cost AS (
+    SELECT
+      slot.project_id,
+      slot.user_id,
+      slot_time_consumed/1000/60 as slot_time_consumed_mins,
+      storage_size_in_gb,
+      query_count
+    FROM
+      user_slots slot
+    LEFT OUTER JOIN
+      user_storage_size sto
+    ON
+      slot.project_id=sto.project_id
+      AND slot.user_id=sto.user_id
+    ORDER BY 3 DESC )
+  SELECT
+    12 AS rule_id,
+    'hsbc' AS org_id,
+    project_id AS project_name,
+    user_id,
+    query_count,
+    ROUND(slot_time_consumed_mins,3) as slot_time_consumed_mins,
+    ROUND(storage_size_in_gb,3) as storage_size_in_gb,
+    0.0 AS cost
+  FROM
+    user_cost uc
+INNER JOIN (SELECT user_name FROM user_table_access WHERE add login for checking if user id has @ and if @ is ther then again check if it has gservice account.com) ad
+ON uc.user_id =ad.user_name)
+ORDER BY query_count DESC;
