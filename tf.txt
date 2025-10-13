@@ -91,6 +91,8 @@ locals {
   project_subnet_uri         = "projects/${local.my_project}/regions/${local.region}/subnetworks/${local.project_vpc_subnet}"
   def_subnet_uri             = "projects/${local.my_project}/regions/${local.region}/subnetworks/${local.default_network}"
   vm_instance_name           = "${local.vm_name}-${local.inst_postfix}-extraction-test"
+  policy_instance_name       = "${local.policy_name}-${local.inst_postfix}"
+  sql_instance_name          = "${local.cloudsql_instance_name}-${local.env}"
   zone                       = "${local.region}-${local.zone_postfix}"
   region_to_timezone = {
     "asia-south1"  = "Asia/Kolkata"
@@ -140,12 +142,14 @@ resource "google_storage_bucket_object" "startup_script" {
 }
 
 # ------------------------------------------------------------------------------
-# VM Resource Policy for Scheduling
+# Resource Definitions
 # ------------------------------------------------------------------------------
+
+# --- VM Resource Policy for Scheduling ---
 resource "google_compute_resource_policy" "vm_schedule" {
   count       = local.build_vm ? 1 : 0
   project     = local.my_project
-  name        = "${local.policy_name}-${local.inst_postfix}"
+  name        = local.policy_instance_name
   region      = local.region
   description = "Office Hours for ${local.inst_postfix}"
 
@@ -157,39 +161,10 @@ resource "google_compute_resource_policy" "vm_schedule" {
   }
 }
 
-# ------------------------------------------------------------------------------
-# Pre-Creation Steps
-# ------------------------------------------------------------------------------
-
-# This resource replicates the script's logic of deleting the VM if it exists
-# before attempting to create a new one.
-resource "null_resource" "delete_instance_before_create" {
-  count = local.build_vm ? 1 : 0
-
-  # This trigger ensures the deletion command re-runs if the instance name changes.
-  triggers = {
-    instance_name = local.vm_instance_name
-  }
-
-  provisioner "local-exec" {
-    # This command attempts to delete the instance. The `|| true` ensures that
-    # if the instance doesn't exist (and the command fails), Terraform doesn't
-    # stop the entire process.
-    command = "gcloud compute instances delete ${local.vm_instance_name} --project=${local.my_project} --zone=${local.zone} --quiet --impersonate-service-account=${local.build_account_email} || true"
-  }
-}
-
-# ------------------------------------------------------------------------------
-# Resource Definitions
-# ------------------------------------------------------------------------------
 
 # --- GCE Proxy VM Instance (from create-vm.sh) ---
 resource "google_compute_instance" "proxy_vm" {
   count = local.build_vm ? 1 : 0
-
-  # This depends_on ensures that the deletion command from the null_resource
-  # runs before Terraform attempts to create this instance.
-  depends_on = [null_resource.delete_instance_before_create]
 
   project      = local.my_project
   zone         = local.zone
@@ -232,7 +207,7 @@ resource "google_compute_instance" "proxy_vm" {
     gbmtNexus              = "gbmt-nexus"
     nexus302               = "nexus302"
     bucketUriStartup       = "gs://${local.startup_script_bucket}"
-    cloudsql_instance_name = "${local.cloudsql_instance_name}-${local.env}"
+    cloudsql_instance_name = local.sql_instance_name
     cloudsql_private_ip    = local.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : ""
     isGmiTest              = "true"
   }
@@ -250,7 +225,6 @@ resource "google_compute_instance_iam_member" "vm_stopper" {
   project       = local.my_project
   zone          = local.zone
   instance_name = google_compute_instance.proxy_vm[0].name
-  # This now uses the exact custom role from the script.
   role          = "organizations/103829057055/roles/cr.instancestopStart"
   member        = "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com"
 }
@@ -258,13 +232,10 @@ resource "google_compute_instance_iam_member" "vm_stopper" {
 # --- Attach the Resource Policy using local-exec ---
 resource "null_resource" "add_vm_schedule" {
   count = local.build_vm ? 1 : 0
-
-  # This ensures the command runs only after the VM and its relevant IAM policy exist.
   depends_on = [
     google_compute_instance.proxy_vm,
     google_compute_instance_iam_member.vm_stopper
   ]
-
   provisioner "local-exec" {
     command = "gcloud compute instances add-resource-policies ${google_compute_instance.proxy_vm[0].name} --resource-policies=${google_compute_resource_policy.vm_schedule[0].name} --zone=${local.zone} --project=${local.my_project} --impersonate-service-account=${local.build_account_email}"
   }
@@ -275,7 +246,7 @@ resource "google_sql_database_instance" "main_db" {
   count = local.build_sql ? 1 : 0
 
   project             = local.my_project
-  name                = "${local.cloudsql_instance_name}-${local.env}"
+  name                = local.sql_instance_name
   region              = local.region
   database_version    = "POSTGRES_13"
   encryption_key_name = local.kms_sql_key
