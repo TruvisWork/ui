@@ -204,12 +204,13 @@ resource "google_compute_instance" "proxy_vm" {
       size  = local.disk_size_gb
       type  = local.disk_type
     }
-    boot_disk_device_name = local.vm_instance_name
+    device_name      = local.vm_instance_name
+    kms_key_self_link = local.kms_compute_key
   }
 
   network_interface {
-    subnetwork         = local.host_subnet_uri
-    private_ip_address = data.google_compute_address.static_ip.address
+    subnetwork = local.host_subnet_uri
+    network_ip = data.google_compute_address.static_ip.address
   }
 
   network_interface {
@@ -223,10 +224,6 @@ resource "google_compute_instance" "proxy_vm" {
 
   scheduling {
     resource_policies = [google_compute_resource_policy.vm_schedule[0].self_link]
-  }
-
-  boot_disk_encryption_key {
-    kms_key_self_link = local.kms_compute_key
   }
 
   metadata = {
@@ -298,9 +295,6 @@ resource "google_sql_database_instance" "main_db" {
     insights_config {
       query_insights_enabled = true
     }
-
-    database_flags = []
-    user_labels    = {}
   }
 }
 
@@ -353,6 +347,6 @@ output "proxy_vm_secondary_ip" {
 
 output "cloudsql_instance_connection_name" {
   description = "The connection name for the Cloud SQL instance."
-  value       = local.build_sql ? google_sql_database_instance.main_db[0].connection_.name : "SQL not built."
+  value       = local.build_sql ? google_sql_database_instance.main_db[0].connection_name : "SQL not built."
 }
 
