@@ -68,6 +68,37 @@ locals {
 
 
 # ------------------------------------------------------------------------------
+# GCS Startup Script Object
+# Manages the startup script file in GCS, ensuring it's always present.
+# ------------------------------------------------------------------------------
+resource "google_storage_bucket_object" "startup_script" {
+  # This resource will only be created if a VM is being built
+  count  = var.build_vm ? 1 : 0
+  name   = var.startup_script_path
+  bucket = var.startup_script_bucket
+  source = var.startup_script_local_path
+}
+
+
+# ------------------------------------------------------------------------------
+# VM Resource Policy for Scheduling
+# ------------------------------------------------------------------------------
+resource "google_compute_resource_policy" "vm_schedule" {
+  # This resource will only be created if a VM is being built
+  count       = var.build_vm ? 1 : 0
+  project     = var.my_project
+  name        = "${var.policy_name}-${var.inst_postfix}"
+  region      = var.region
+  description = "Office Hours for ${var.inst_postfix}"
+
+  instance_schedule_policy {
+    vm_start_schedule = null # Not defined in script
+    vm_stop_schedule  = var.vm_stop_schedule
+    time_zone         = local.timezone
+  }
+}
+
+# ------------------------------------------------------------------------------
 # Example Resource Definitions
 # These blocks show how to use the variables and locals to create resources.
 # ------------------------------------------------------------------------------
@@ -113,6 +144,89 @@ resource "google_compute_instance" "main_vm" {
   allow_stopping_for_update = true
 
   tags = ["terraform-managed", local.env]
+}
+
+# --- GCE Proxy VM Instance (from create-vm.sh) ---
+resource "google_compute_instance" "proxy_vm" {
+  # This resource will only be created if var.build_vm is true
+  count = var.build_vm ? 1 : 0
+
+  project      = var.my_project
+  zone         = local.zone
+  name         = local.vm_instance_name
+  machine_type = var.machine_type
+  tags         = var.network_tags
+
+  boot_disk {
+    initialize_params {
+      image = "projects/${var.image_project}/global/images/family/${var.image_family_stage2}"
+      size  = var.disk_size_gb
+      type  = var.disk_type
+    }
+    # The script uses the boot disk name as the device name
+    boot_disk_device_name = local.vm_instance_name
+  }
+
+  # First network interface (on host VPC)
+  network_interface {
+    subnetwork         = local.host_subnet_uri
+    private_ip_address = var.ip_static
+  }
+
+  # Second network interface (on default project network)
+  network_interface {
+    subnetwork = local.def_subnet_uri
+  }
+
+  service_account {
+    email  = local.vm_sa_email
+    scopes = var.vm_scopes
+  }
+
+  scheduling {
+    # Attach the resource policy for start/stop schedule
+    resource_policies = [google_compute_resource_policy.vm_schedule[0].self_link]
+  }
+
+  boot_disk_encryption_key {
+    kms_key_self_link = local.kms_compute_key
+  }
+
+  metadata = {
+    # Reference the GCS script URL; depends on the object being created first
+    startup-script-url   = "gs://${var.startup_script_bucket}/${google_storage_bucket_object.startup_script[0].name}"
+    region               = var.region
+    zonePostfix          = var.zone_postfix
+    project              = var.my_project
+    yumpackages          = var.yum_packages
+    env                  = local.env
+    nexus3               = "nexus3"
+    gbmtNexus            = "gbmt-nexus"
+    nexus302             = "nexus302"
+    bucketUriStartup     = "gs://${var.startup_script_bucket}"
+    cloudsql_instance_name = "${var.cloudsql_instance_name}-${local.env}"
+    # This requires the Cloud SQL instance to exist to get its IP
+    cloudsql_private_ip = var.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : ""
+    isGmiTest            = "true"
+  }
+
+  allow_stopping_for_update = true
+  # The script deletes the instance if it exists. Terraform's default behavior
+  # is to update in place, which is generally safer.
+  # To mimic the script's delete-and-recreate behavior, you could use:
+  # lifecycle {
+  #   create_before_destroy = true
+  # }
+}
+
+# --- IAM Binding for the Proxy VM ---
+resource "google_compute_instance_iam_member" "vm_stopper" {
+  count        = var.build_vm ? 1 : 0
+  project      = var.my_project
+  zone         = local.zone
+  instance_name = google_compute_instance.proxy_vm[0].name
+  role         = "roles/compute.instanceAdmin.v1" # Broader role often needed for start/stop
+  member       = "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com"
 }
 
 
@@ -180,4 +294,5 @@ resource "google_sql_user" "iam_service_accounts" {
   name     = each.key
   type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }
+
 
