@@ -16,7 +16,7 @@ locals {
   # ----------------------------------------------------------------------------
   # Static Configuration (Values from params.sh)
   # ----------------------------------------------------------------------------
-  my_project                 = "hsbc-1201_PRIVATE_Ocr-dev"
+  my_project                 = "hsbc-12010598-fdrasp-dev"
   region                     = "asia-east2"
   zone_postfix               = "a"
   inst_postfix               = "dev-9999"
@@ -32,6 +32,8 @@ locals {
   policy_name                = "office-hours"
   vm_stop_schedule           = "0 19 * * *"
   cloudsql_instance_name     = "qg-reco-engine"
+  postgres_password          = "Temp@1234"
+  db_name                    = "recommendations"
   vm_name                    = "query-genie-reco"
   machine_type               = "n2-standard-8"
   disk_type                  = "pd-standard"
@@ -40,15 +42,18 @@ locals {
   startup_script_bucket      = "${local.my_project}-query-genie-reco" # Bucket is pre-existing as per script
   startup_script_path        = "query-genie-reco/extraction_startup.sh"
   startup_script_local_path  = "extraction_startup.sh" # IMPORTANT: This local file must exist when you run terraform.
+  iam_user_emails            = ["gcp.s.devops-team@hsbc.com"]
   iam_service_account_names  = ["terraform-jenkins-usr", "query-genie"]
   build_account_name         = "terraform-jenkins-usr"
 
   # --- Feature Flags ---
-  build_vm = true
+  build_sql = true
+  build_vm  = true
 
   # --- KMS Flags ---
   use_hsm_key_for_gcs = false
   use_hsm_key_for_gce = false
+  use_hsm_key_for_sql = false
 
   # --- VM Scopes ---
   vm_scopes = [
@@ -98,6 +103,7 @@ locals {
   startup_script_url         = "gs://${local.startup_script_bucket}/${local.startup_script_path}"
   kms_bucket_key             = local.use_hsm_key_for_gcs ? "projects/${local.kms_project}/locations/${local.region}/keyRings/cloudStorage/cryptoKeys/HSMCloudStorage" : "projects/${local.kms_project}/locations/${local.region}/keyRings/cloudStorage/cryptoKeys/cloudStorage"
   kms_compute_key            = local.use_hsm_key_for_gce ? "projects/${local.kms_project}/locations/${local.region}/keyRings/computeEngine/cryptoKeys/HSMComputeEngine" : "projects/${local.kms_project}/locations/${local.region}/keyRings/computeEngine/cryptoKeys/computeEngine"
+  kms_sql_key                = local.use_hsm_key_for_sql ? "projects/${local.kms_project}/locations/${local.region}/keyRings/sql/cryptoKeys/HSMSqlSharedKey" : "projects/${local.kms_project}/locations/${local.region}/keyRings/sql/cryptoKeys/sqlSharedKey"
   ar_kms_key                 = "projects/${local.kms_project}/locations/${local.region}/keyRings/ar/cryptoKeys/arSharedKey"
 }
 
@@ -122,13 +128,27 @@ data "google_compute_address" "static_ip" {
   name = local.ip_static_name
 }
 
-# Data source to get information about the existing Cloud SQL instance
+# Check if Cloud SQL instance already exists
 data "google_sql_database_instance" "existing_db" {
-  count   = local.build_vm ? 1 : 0 # Only look it up if we're building the VM
-  project = local.my_project
+  count   = local.build_sql ? 1 : 0
   name    = local.sql_instance_name
+  project = local.my_project
 }
 
+# Check if Resource Policy already exists
+data "google_compute_resource_policy" "existing_policy" {
+  count   = local.build_vm ? 1 : 0
+  name    = local.policy_instance_name
+  region  = local.region
+  project = local.my_project
+}
+
+# Check if startup script exists in bucket
+data "google_storage_bucket_object" "existing_startup_script" {
+  count  = local.build_vm ? 1 : 0
+  name   = local.startup_script_path
+  bucket = local.startup_script_bucket
+}
 
 # ------------------------------------------------------------------------------
 # GCS Resources
@@ -139,8 +159,13 @@ resource "google_storage_bucket_object" "startup_script" {
   bucket = local.startup_script_bucket
   source = local.startup_script_local_path
 
-  # Terraform implicitly handles the checksum logic. It will only update the
-  # GCS object if the local file's content has changed.
+  # This triggers update only when the file content changes
+  detect_md5hash = "different"
+
+  lifecycle {
+    # Only create if doesn't exist, or update if content changed
+    create_before_destroy = true
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -151,7 +176,8 @@ resource "null_resource" "delete_instance_before_create" {
   count = local.build_vm ? 1 : 0
 
   triggers = {
-    instance_name = local.vm_instance_name
+    # This ensures the VM is recreated every time
+    always_run = timestamp()
   }
 
   provisioner "local-exec" {
@@ -162,6 +188,28 @@ resource "null_resource" "delete_instance_before_create" {
 # ------------------------------------------------------------------------------
 # Resource Definitions
 # ------------------------------------------------------------------------------
+
+# --- VM Resource Policy for Scheduling ---
+# Only create if it doesn't exist
+resource "google_compute_resource_policy" "vm_schedule" {
+  count       = local.build_vm && length(data.google_compute_resource_policy.existing_policy) == 0 ? 1 : 0
+  project     = local.my_project
+  name        = local.policy_instance_name
+  region      = local.region
+  description = "Office Hours for ${local.inst_postfix}"
+
+  instance_schedule_policy {
+    time_zone = local.timezone
+    vm_stop_schedule {
+      schedule = local.vm_stop_schedule
+    }
+  }
+
+  lifecycle {
+    # Prevent destroy if resource already exists
+    prevent_destroy = false
+  }
+}
 
 # --- GCE Proxy VM Instance (from create-vm.sh) ---
 resource "google_compute_instance" "proxy_vm" {
@@ -212,7 +260,7 @@ resource "google_compute_instance" "proxy_vm" {
     nexus302               = "nexus302"
     bucketUriStartup       = "gs://${local.startup_script_bucket}"
     cloudsql_instance_name = local.sql_instance_name
-    cloudsql_private_ip    = data.google_sql_database_instance.existing_db[0].private_ip_address
+    cloudsql_private_ip    = local.build_sql ? (length(data.google_sql_database_instance.existing_db) > 0 ? data.google_sql_database_instance.existing_db[0].private_ip_address : google_sql_database_instance.main_db[0].private_ip_address) : ""
     isGmiTest              = "true"
   }
 
@@ -240,9 +288,109 @@ resource "null_resource" "add_vm_schedule" {
     google_compute_instance.proxy_vm,
     google_compute_instance_iam_member.vm_stopper
   ]
+  
   provisioner "local-exec" {
-    command = "gcloud compute instances add-resource-policies ${google_compute_instance.proxy_vm[0].name} --resource-policies=${local.policy_instance_name} --zone=${local.zone} --project=${local.my_project} --impersonate-service-account=${local.build_account_email}"
+    # Use the existing policy if it exists, otherwise use the newly created one
+    command = <<-EOT
+      POLICY_NAME=${length(data.google_compute_resource_policy.existing_policy) > 0 ? data.google_compute_resource_policy.existing_policy[0].name : (length(google_compute_resource_policy.vm_schedule) > 0 ? google_compute_resource_policy.vm_schedule[0].name : local.policy_instance_name)}
+      gcloud compute instances add-resource-policies ${google_compute_instance.proxy_vm[0].name} \
+        --resource-policies=$POLICY_NAME \
+        --zone=${local.zone} \
+        --project=${local.my_project} \
+        --impersonate-service-account=${local.build_account_email} || true
+    EOT
   }
+}
+
+# --- Google Cloud SQL Instance ---
+# Only create if it doesn't exist
+resource "google_sql_database_instance" "main_db" {
+  count = local.build_sql && length(data.google_sql_database_instance.existing_db) == 0 ? 1 : 0
+
+  project             = local.my_project
+  name                = local.sql_instance_name
+  region              = local.region
+  database_version    = "POSTGRES_13"
+  encryption_key_name = local.kms_sql_key
+  deletion_protection = false
+
+  settings {
+    tier              = "db-custom-2-8192"
+    activation_policy = "ALWAYS"
+    availability_type = "REGIONAL"
+    disk_autoresize   = true
+    disk_type         = "PD_SSD"
+
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = "projects/${data.google_project.project.name}/global/networks/${local.default_network}"
+    }
+
+    backup_configuration {
+      enabled = true
+    }
+
+    maintenance_window {
+      day  = 1 # Sunday
+      hour = 4
+    }
+
+    insights_config {
+      query_insights_enabled = true
+    }
+    
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+# --- Google Cloud SQL Database ---
+resource "google_sql_database" "database" {
+  count    = local.build_sql ? 1 : 0
+  instance = length(data.google_sql_database_instance.existing_db) > 0 ? data.google_sql_database_instance.existing_db[0].name : google_sql_database_instance.main_db[0].name
+  name     = local.db_name
+
+  lifecycle {
+    # Don't fail if database already exists
+    create_before_destroy = false
+  }
+}
+
+# --- Google Cloud SQL User ---
+resource "google_sql_user" "postgres_admin" {
+  count    = local.build_sql ? 1 : 0
+  instance = length(data.google_sql_database_instance.existing_db) > 0 ? data.google_sql_database_instance.existing_db[0].name : google_sql_database_instance.main_db[0].name
+  name     = "postgres"
+  password = local.postgres_password
+
+  lifecycle {
+    # Ignore password changes after initial creation
+    ignore_changes = [password]
+  }
+}
+
+# --- IAM Users for Cloud SQL ---
+resource "google_sql_user" "iam_users" {
+  for_each = local.build_sql ? toset(local.iam_user_emails) : []
+  project  = local.my_project
+  instance = length(data.google_sql_database_instance.existing_db) > 0 ? data.google_sql_database_instance.existing_db[0].name : google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_USER"
+}
+
+# --- IAM Service Accounts for Cloud SQL ---
+resource "google_sql_user" "iam_service_accounts" {
+  for_each = local.build_sql ? toset(local.iam_service_account_emails) : []
+  project  = local.my_project
+  instance = length(data.google_sql_database_instance.existing_db) > 0 ? data.google_sql_database_instance.existing_db[0].name : google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }
 
 # ------------------------------------------------------------------------------
@@ -259,3 +407,17 @@ output "proxy_vm_secondary_ip" {
   value       = local.build_vm ? google_compute_instance.proxy_vm[0].network_interface[1].network_ip : "VM not built."
 }
 
+output "cloudsql_instance_connection_name" {
+  description = "The connection name for the Cloud SQL instance."
+  value       = local.build_sql ? (length(data.google_sql_database_instance.existing_db) > 0 ? data.google_sql_database_instance.existing_db[0].connection_name : google_sql_database_instance.main_db[0].connection_name) : "SQL not built."
+}
+
+output "cloudsql_exists" {
+  description = "Whether Cloud SQL instance already exists"
+  value       = local.build_sql ? length(data.google_sql_database_instance.existing_db) > 0 : false
+}
+
+output "resource_policy_exists" {
+  description = "Whether Resource Policy already exists"
+  value       = local.build_vm ? length(data.google_compute_resource_policy.existing_policy) > 0 : false
+}
