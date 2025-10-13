@@ -246,6 +246,10 @@ resource "google_compute_instance" "proxy_vm" {
   }
 
   allow_stopping_for_update = true
+
+  lifecycle {
+    ignore_changes = [scheduling]
+  }
 }
 
 # --- IAM Binding for the Proxy VM ---
@@ -263,17 +267,19 @@ resource "google_compute_instance_iam_member" "vm_stopper" {
 resource "google_sql_database_instance" "main_db" {
   count = local.build_sql ? 1 : 0
 
-  project          = local.my_project
-  name             = "${local.cloudsql_instance_name}-${local.env}"
-  region           = local.region
-  database_version = "POSTGRES_13"
+  project             = local.my_project
+  name                = "${local.cloudsql_instance_name}-${local.env}"
+  region              = local.region
+  database_version    = "POSTGRES_13"
+  encryption_key_name = local.kms_sql_key
+  deletion_protection = false
 
   settings {
-    tier                  = "db-custom-2-8192"
-    availability_type     = "REGIONAL"
-    disk_autoresize       = true
-    disk_type             = "PD_SSD"
-    encryption_key_name   = local.kms_sql_key
+    tier              = "db-custom-2-8192"
+    activation_policy = "ALWAYS"
+    availability_type = "REGIONAL"
+    disk_autoresize   = true
+    disk_type         = "PD_SSD"
 
     ip_configuration {
       ipv4_enabled    = false
@@ -283,6 +289,18 @@ resource "google_sql_database_instance" "main_db" {
     backup_configuration {
       enabled = true
     }
+
+    maintenance_window {
+      day  = 1 # Sunday
+      hour = 4
+    }
+
+    insights_config {
+      query_insights_enabled = true
+    }
+
+    database_flags = []
+    user_labels    = {}
   }
 }
 
@@ -335,6 +353,6 @@ output "proxy_vm_secondary_ip" {
 
 output "cloudsql_instance_connection_name" {
   description = "The connection name for the Cloud SQL instance."
-  value       = local.build_sql ? google_sql_database_instance.main_db[0].connection_name : "SQL not built."
+  value       = local.build_sql ? google_sql_database_instance.main_db[0].connection_.name : "SQL not built."
 }
 
