@@ -1,0 +1,214 @@
+# ------------------------------------------------------------------------------
+# Generic Project Configuration
+# ------------------------------------------------------------------------------
+variable "my_project" {
+  type        = string
+  description = "The GCP project ID to deploy resources into."
+  default     = "hsbc-12010598-fdrasp-dev"
+}
+
+variable "iam_service_account_names" {
+  type        = list(string)
+  description = "A list of service account names (without the project/domain) to be granted Cloud SQL access."
+  default     = ["terraform-jenkins-usr", "query-genie"]
+}
+
+variable "region" {
+  type        = string
+  description = "The primary GCP region for deployment."
+  default     = "asia-east2"
+}
+
+variable "inst_postfix" {
+  type        = string
+  description = "A postfix to append to instance names, typically for uniqueness."
+  default     = "dev-9999"
+}
+
+# ------------------------------------------------------------------------------
+# Feature Flags
+# ------------------------------------------------------------------------------
+variable "build_sql" {
+  type        = bool
+  description = "Flag to control the creation of the Cloud SQL instance."
+  default     = true
+}
+
+variable "build_vm" {
+  type        = bool
+  description = "Flag to control the creation of the primary VM."
+  default     = true
+}
+
+# ------------------------------------------------------------------------------
+# Networking Configuration
+# ------------------------------------------------------------------------------
+variable "host_project" {
+  type        = string
+  description = "The project ID of the host VPC."
+  default     = "hsbc-6320774-vpchost-asia"
+}
+
+variable "host_network" {
+  type        = string
+  description = "The name of the host VPC network."
+  default     = "internal-vpc1"
+}
+
+variable "host_subnet" {
+  type        = string
+  description = "The name of the subnet in the host VPC."
+}
+
+variable "project_vpc_subnet" {
+  type        = string
+  description = "Subnet within the service project."
+  default     = "net1"
+}
+
+variable "default_network" {
+  type        = string
+  description = "Default network name."
+  default     = "hsbc-default-network"
+}
+
+# ------------------------------------------------------------------------------
+# Cloud SQL Configuration
+# ------------------------------------------------------------------------------
+variable "cloudsql_instance_name" {
+  type        = string
+  description = "The name of the Cloud SQL instance."
+  default     = "qg-reco-engine"
+}
+
+variable "postgres_password" {
+  type        = string
+  description = "The password for the PostgreSQL superuser."
+  sensitive   = true
+  default     = "Temp@1234"
+}
+
+variable "db_name" {
+  type        = string
+  description = "The name of the Cloud SQL database."
+  default     = "recommendations"
+}
+
+variable "iam_user_emails" {
+  type        = list(string)
+  description = "List of IAM user emails for Cloud SQL authentication."
+  default     = ["gcp.s.devops-team@hsbc.com"]
+}
+
+# ------------------------------------------------------------------------------
+# VM Configuration
+# ------------------------------------------------------------------------------
+variable "vm_name" {
+  type        = string
+  description = "Base name for the VM instance."
+  default     = "vmQueryGenie"
+}
+
+variable "machine_type" {
+  type        = string
+  description = "The machine type for the VM."
+  default     = "n2-standard-8"
+}
+
+variable "disk_type" {
+  type        = string
+  description = "The type of the boot disk."
+  default     = "pd-standard"
+}
+
+variable "disk_size_gb" {
+  type        = number
+  description = "The size of the boot disk in GB."
+  default     = 300
+}
+
+variable "zone_postfix" {
+  type        = string
+  description = "The postfix for the zone (e.g., 'a', 'b', 'c')."
+  default     = "a"
+}
+
+variable "image_project" {
+  type        = string
+  description = "The project where the VM images are stored."
+  default     = "hsbc-6320774-distcompute-prod"
+}
+
+variable "image_family_stage2" {
+  type        = string
+  description = "The image family for stage 2."
+  default     = "gce-rhel8-ver2-stage2"
+}
+
+variable "image_family_stage3" {
+  type        = string
+  description = "The image family for stage 3."
+  default     = "query-genie-reco-stage3"
+}
+
+variable "vm_scopes" {
+  type        = list(string)
+  description = "API access scopes for the VM instance."
+  default = [
+    "https://www.googleapis.com/auth/compute",
+    "https://www.googleapis.com/auth/logging.write",
+    "https://www.googleapis.com/auth/monitoring.write",
+    "https://www.googleapis.com/auth/bigquery",
+    "https://www.googleapis.com/auth/sqlservice.admin",
+    "https://www.googleapis.com/auth/devstorage.full_control",
+    "https://www.googleapis.com/auth/cloud-platform",
+  ]
+}
+
+variable "startup_script_bucket" {
+  type        = string
+  description = "The GCS bucket containing startup scripts."
+}
+
+variable "startup_script_path" {
+  type        = string
+  description = "The path within the bucket to the startup script."
+  default     = "query-genie-reco/extraction_startup.sh"
+}
+
+# ------------------------------------------------------------------------------
+# KMS (Key Management Service) Configuration
+# ------------------------------------------------------------------------------
+variable "kms_project" {
+  type        = string
+  description = "The project where KMS keys are located."
+  default     = "hsbc-6320774-kms"
+}
+
+variable "use_hsm_key_for_gcs" {
+  type        = bool
+  description = "If true, use the HSM-backed key for Cloud Storage. Otherwise, use the standard key."
+  default     = false
+}
+
+variable "use_hsm_key_for_gce" {
+  type        = bool
+  description = "If true, use the HSM-backed key for Compute Engine. Otherwise, use the standard key."
+  default     = false
+}
+
+variable "use_hsm_key_for_sql" {
+  type        = bool
+  description = "If true, use the HSM-backed key for Cloud SQL. Otherwise, use the standard key."
+  default     = false
+}
+
+# ------------------------------------------------------------------------------
+# Miscellaneous
+# ------------------------------------------------------------------------------
+variable "yum_packages" {
+  type        = string
+  description = "A space-separated string of yum packages to install."
+  default     = "python312:python3-pip:java-17-openjdk:git"
+}
+
