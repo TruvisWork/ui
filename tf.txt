@@ -142,7 +142,7 @@ resource "google_storage_bucket_object" "startup_script" {
 }
 
 # ------------------------------------------------------------------------------
-# Pre-Creation Deletion Step for VM
+# Pre-Creation Deletion Steps
 # This section ensures the VM is deleted before creation, mirroring the script.
 # ------------------------------------------------------------------------------
 resource "null_resource" "delete_instance_before_create" {
