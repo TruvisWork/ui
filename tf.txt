@@ -222,10 +222,6 @@ resource "google_compute_instance" "proxy_vm" {
     scopes = local.vm_scopes
   }
 
-  scheduling {
-    resource_policies = [google_compute_resource_policy.vm_schedule[0].self_link]
-  }
-
   metadata = {
     startup-script-url     = "gs://${local.startup_script_bucket}/${google_storage_bucket_object.startup_script[0].name}"
     region                 = local.region
@@ -258,6 +254,21 @@ resource "google_compute_instance_iam_member" "vm_stopper" {
   # This now uses the exact custom role from the script.
   role          = "organizations/103829057055/roles/cr.instancestopStart"
   member        = "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com"
+}
+
+# --- Attach the Resource Policy using local-exec ---
+resource "null_resource" "add_vm_schedule" {
+  count = local.build_vm ? 1 : 0
+
+  # This ensures the command runs only after the VM and its relevant IAM policy exist.
+  depends_on = [
+    google_compute_instance.proxy_vm,
+    google_compute_instance_iam_member.vm_stopper
+  ]
+
+  provisioner "local-exec" {
+    command = "gcloud compute instances add-resource-policies ${google_compute_instance.proxy_vm[0].name} --resource-policies=${google_compute_resource_policy.vm_schedule[0].name} --zone=${local.zone} --project=${local.my_project} --impersonate-service-account=${local.build_account_email}"
+  }
 }
 
 # --- Google Cloud SQL Instance ---
