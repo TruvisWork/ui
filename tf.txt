@@ -39,7 +39,7 @@ locals {
   disk_type                  = "pd-standard"
   disk_size_gb               = 300
   yum_packages               = "python312:python3-pip:java-17-openjdk:git"
-  startup_script_bucket      = local.my_project # As per bucketUriStartup logic
+  startup_script_bucket      = "${local.my_project}-query-genie-reco" # Bucket is pre-existing as per script
   startup_script_path        = "query-genie-reco/extraction_startup.sh"
   startup_script_local_path  = "extraction_startup.sh" # IMPORTANT: This local file must exist when you run terraform.
   iam_user_emails            = ["gcp.s.devops-team@hsbc.com"]
@@ -126,9 +126,8 @@ data "google_compute_address" "static_ip" {
   name = local.ip_static_name
 }
 
-
 # ------------------------------------------------------------------------------
-# GCS Startup Script Object
+# GCS Resources
 # ------------------------------------------------------------------------------
 resource "google_storage_bucket_object" "startup_script" {
   count  = local.build_vm ? 1 : 0
@@ -305,6 +304,11 @@ resource "google_sql_database_instance" "main_db" {
 
     insights_config {
       query_insights_enabled = true
+    }
+    
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
     }
   }
 }
