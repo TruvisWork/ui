@@ -34,7 +34,7 @@ locals {
   cloudsql_instance_name     = "qg-reco-engine"
   postgres_password          = "Temp@1234"
   db_name                    = "recommendations"
-  vm_name                    = "query-genie-reco" # CORRECTED: This now matches the vmName from the script.
+  vm_name                    = "query-genie-reco"
   machine_type               = "n2-standard-8"
   disk_type                  = "pd-standard"
   disk_size_gb               = 300
@@ -151,9 +151,10 @@ resource "google_compute_resource_policy" "vm_schedule" {
   description = "Office Hours for ${local.inst_postfix}"
 
   instance_schedule_policy {
-    vm_start_schedule = null
-    vm_stop_schedule  = local.vm_stop_schedule
-    time_zone         = local.timezone
+    time_zone = local.timezone
+    vm_stop_schedule {
+      schedule = local.vm_stop_schedule
+    }
   }
 }
 
@@ -268,10 +269,11 @@ resource "google_sql_database_instance" "main_db" {
   database_version = "POSTGRES_13"
 
   settings {
-    tier              = "db-custom-2-8192"
-    availability_type = "REGIONAL"
-    disk_autoresize   = true
-    disk_type         = "PD_SSD"
+    tier                  = "db-custom-2-8192"
+    availability_type     = "REGIONAL"
+    disk_autoresize       = true
+    disk_type             = "PD_SSD"
+    encryption_key_name   = local.kms_sql_key
 
     ip_configuration {
       ipv4_enabled    = false
@@ -281,10 +283,6 @@ resource "google_sql_database_instance" "main_db" {
     backup_configuration {
       enabled = true
     }
-  }
-
-  database_encryption_key {
-    kms_key_name = local.kms_sql_key
   }
 }
 
