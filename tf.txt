@@ -1,52 +1,72 @@
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = ">= 4.0"
+    }
+  }
+}
+
 # ------------------------------------------------------------------------------
-# Generic Project Configuration
+# Locals
+# All static and dynamic values are defined here, replacing the need for
+# variables.tf and terraform.tfvars files.
 # ------------------------------------------------------------------------------
-variable "my_project" {
-  type        = string
-  description = "The GCP project ID to deploy resources into."
-  default     = "hsbc-12010598-fdrasp-dev"
-}
+locals {
+  # ----------------------------------------------------------------------------
+  # Static Configuration (Values from params.sh)
+  # ----------------------------------------------------------------------------
+  my_project                 = "hsbc-12010598-fdrasp-dev"
+  region                     = "asia-east2"
+  zone_postfix               = "a"
+  inst_postfix               = "dev-9999"
+  host_project               = "hsbc-6320774-vpchost-asia"
+  host_subnet                = "${local.host_project}-internal-vpc1" # As per hostSubnet logic
+  project_vpc_subnet         = "net1"
+  default_network            = "hsbc-default-network"
+  kms_project                = "hsbc-6320774-kms"
+  image_project              = "hsbc-6320774-distcompute-prod"
+  image_family_stage2        = "gce-rhel8-ver2-stage2"
+  image_family_stage3        = "query-genie-reco-stage3"
+  ip_static_name             = "query-genie-test" # The name of the reserved static IP
+  policy_name                = "office-hours"
+  vm_stop_schedule           = "0 19 * * *"
+  cloudsql_instance_name     = "qg-reco-engine"
+  postgres_password          = "Temp@1234"
+  db_name                    = "recommendations"
+  vm_name                    = "vmQueryGenie"
+  machine_type               = "n2-standard-8"
+  disk_type                  = "pd-standard"
+  disk_size_gb               = 300
+  yum_packages               = "python312:python3-pip:java-17-openjdk:git"
+  startup_script_bucket      = local.my_project # As per bucketUriStartup logic
+  startup_script_path        = "query-genie-reco/extraction_startup.sh"
+  startup_script_local_path  = "extraction_startup.sh" # IMPORTANT: This local file must exist when you run terraform.
+  iam_user_emails            = ["gcp.s.devops-team@hsbc.com"]
+  iam_service_account_names  = ["terraform-jenkins-usr", "query-genie"]
 
-variable "iam_service_account_names" {
-  type        = list(string)
-  description = "A list of service account names (without the project/domain) to be granted Cloud SQL access."
-  default     = ["terraform-jenkins-usr", "query-genie"]
-}
+  # --- Feature Flags ---
+  build_sql = true
+  build_vm  = true
 
-variable "region" {
-  type        = string
-  description = "The primary GCP region for deployment."
-  default     = "asia-east2"
-}
+  # --- KMS Flags ---
+  use_hsm_key_for_gcs = false
+  use_hsm_key_for_gce = false
+  use_hsm_key_for_sql = false
 
-variable "inst_postfix" {
-  type        = string
-  description = "A postfix to append to instance names, typically for uniqueness."
-  default     = "dev-9999"
-}
+  # --- VM Scopes ---
+  vm_scopes = [
+    "https://www.googleapis.com/auth/compute",
+    "https://www.googleapis.com/auth/logging.write",
+    "https://www.googleapis.com/auth/monitoring.write",
+    "https://www.googleapis.com/auth/bigquery",
+    "https://www.googleapis.com/auth/sqlservice.admin",
+    "https://www.googleapis.com/auth/devstorage.full_control",
+    "https://www.googleapis.com/auth/cloud-platform",
+  ]
 
-variable "ip_static" {
-  type        = string
-  description = "The static internal IP address for the proxy VM's primary network interface."
-  default     = "query-genie-test" # Example from params.sh
-}
-
-variable "policy_name" {
-  type        = string
-  description = "The name of the resource policy for scheduling the VM."
-  default     = "office-hours"
-}
-
-variable "vm_stop_schedule" {
-  type        = string
-  description = "The cron expression for stopping the VM."
-  default     = "0 19 * * *" # 7 PM daily
-}
-
-variable "network_tags" {
-  type        = list(string)
-  description = "A list of network tags to apply to the proxy VM."
-  default = [
+  # --- Network Tags ---
+  network_tags = [
     "fwtag-all-dev-inout-ccs-collectors-production",
     "fwtag-all-dev-out-alm-github",
     "fwtag-all-dev-out-alm-nexus-3-production",
@@ -58,193 +78,211 @@ variable "network_tags" {
     "fwtag-all-dev-out-efx-nexus-2-production",
     "fwtag-all-dev-out-gbm-nexus-production"
   ]
+
+  # ----------------------------------------------------------------------------
+  # Derived & Dynamic Values (Logic from scripts)
+  # ----------------------------------------------------------------------------
+  env                        = regex(".*-([^-]+)$", local.my_project)[0]
+  iam_service_account_emails = [for sa in local.iam_service_account_names : "${sa}@${local.my_project}.iam.gserviceaccount.com"]
+  vm_sa_email                = "query-genie@${local.my_project}.iam.gserviceaccount.com"
+  host_subnet_uri            = "projects/${local.host_project}/regions/${local.region}/subnetworks/${local.host_subnet}"
+  project_subnet_uri         = "projects/${local.my_project}/regions/${local.region}/subnetworks/${local.project_vpc_subnet}"
+  def_subnet_uri             = "projects/${local.my_project}/regions/${local.region}/subnetworks/${local.default_network}"
+  vm_instance_name           = "${local.vm_name}-${local.inst_postfix}-extraction-test"
+  zone                       = "${local.region}-${local.zone_postfix}"
+  region_to_timezone = {
+    "asia-south1"  = "Asia/Kolkata"
+    "asia-east2"   = "Asia/Hong_Kong"
+    "europe-west2" = "Europe/London"
+  }
+  timezone                   = lookup(local.region_to_timezone, local.region, "Asia/Hong_Kong")
+  startup_script_url         = "gs://${local.startup_script_bucket}/${local.startup_script_path}"
+  kms_bucket_key             = local.use_hsm_key_for_gcs ? "projects/${local.kms_project}/locations/${local.region}/keyRings/cloudStorage/cryptoKeys/HSMCloudStorage" : "projects/${local.kms_project}/locations/${local.region}/keyRings/cloudStorage/cryptoKeys/cloudStorage"
+  kms_compute_key            = local.use_hsm_key_for_gce ? "projects/${local.kms_project}/locations/${local.region}/keyRings/computeEngine/cryptoKeys/HSMComputeEngine" : "projects/${local.kms_project}/locations/${local.region}/keyRings/computeEngine/cryptoKeys/computeEngine"
+  kms_sql_key                = local.use_hsm_key_for_sql ? "projects/${local.kms_project}/locations/${local.region}/keyRings/sql/cryptoKeys/HSMSqlSharedKey" : "projects/${local.kms_project}/locations/${local.region}/keyRings/sql/cryptoKeys/sqlSharedKey"
+  ar_kms_key                 = "projects/${local.kms_project}/locations/${local.region}/keyRings/ar/cryptoKeys/arSharedKey"
+}
+
+provider "google" {
+  project = local.my_project
+  region  = local.region
 }
 
 # ------------------------------------------------------------------------------
-# Feature Flags
+# Data Sources
+# Fetches information about existing resources
 # ------------------------------------------------------------------------------
-variable "build_sql" {
-  type        = bool
-  description = "Flag to control the creation of the Cloud SQL instance."
-  default     = true
+data "google_project" "project" {
+  project_id = local.my_project
 }
 
-variable "build_vm" {
-  type        = bool
-  description = "Flag to control the creation of the primary VM."
-  default     = true
+# Fetches the pre-reserved static internal IP address by its name
+data "google_compute_address" "static_ip" {
+  name = local.ip_static_name
 }
+
 
 # ------------------------------------------------------------------------------
-# Networking Configuration
+# GCS Startup Script Object
 # ------------------------------------------------------------------------------
-variable "host_project" {
-  type        = string
-  description = "The project ID of the host VPC."
-  default     = "hsbc-6320774-vpchost-asia"
-}
-
-variable "host_network" {
-  type        = string
-  description = "The name of the host VPC network."
-  default     = "internal-vpc1"
-}
-
-variable "host_subnet" {
-  type        = string
-  description = "The name of the subnet in the host VPC."
-}
-
-variable "project_vpc_subnet" {
-  type        = string
-  description = "Subnet within the service project."
-  default     = "net1"
-}
-
-variable "default_network" {
-  type        = string
-  description = "Default network name."
-  default     = "hsbc-default-network"
+resource "google_storage_bucket_object" "startup_script" {
+  count  = local.build_vm ? 1 : 0
+  name   = local.startup_script_path
+  bucket = local.startup_script_bucket
+  source = local.startup_script_local_path
 }
 
 # ------------------------------------------------------------------------------
-# Cloud SQL Configuration
+# VM Resource Policy for Scheduling
 # ------------------------------------------------------------------------------
-variable "cloudsql_instance_name" {
-  type        = string
-  description = "The name of the Cloud SQL instance."
-  default     = "qg-reco-engine"
-}
+resource "google_compute_resource_policy" "vm_schedule" {
+  count       = local.build_vm ? 1 : 0
+  project     = local.my_project
+  name        = "${local.policy_name}-${local.inst_postfix}"
+  region      = local.region
+  description = "Office Hours for ${local.inst_postfix}"
 
-variable "postgres_password" {
-  type        = string
-  description = "The password for the PostgreSQL superuser."
-  sensitive   = true
-  default     = "Temp@1234"
-}
-
-variable "db_name" {
-  type        = string
-  description = "The name of the Cloud SQL database."
-  default     = "recommendations"
-}
-
-variable "iam_user_emails" {
-  type        = list(string)
-  description = "List of IAM user emails for Cloud SQL authentication."
-  default     = ["gcp.s.devops-team@hsbc.com"]
+  instance_schedule_policy {
+    vm_start_schedule = null
+    vm_stop_schedule  = local.vm_stop_schedule
+    time_zone         = local.timezone
+  }
 }
 
 # ------------------------------------------------------------------------------
-# VM Configuration
+# Resource Definitions
 # ------------------------------------------------------------------------------
-variable "vm_name" {
-  type        = string
-  description = "Base name for the VM instance."
-  default     = "vmQueryGenie"
+
+# --- GCE Proxy VM Instance (from create-vm.sh) ---
+resource "google_compute_instance" "proxy_vm" {
+  count = local.build_vm ? 1 : 0
+
+  project      = local.my_project
+  zone         = local.zone
+  name         = local.vm_instance_name
+  machine_type = local.machine_type
+  tags         = local.network_tags
+
+  boot_disk {
+    initialize_params {
+      image = "projects/${local.image_project}/global/images/family/${local.image_family_stage2}"
+      size  = local.disk_size_gb
+      type  = local.disk_type
+    }
+    boot_disk_device_name = local.vm_instance_name
+  }
+
+  network_interface {
+    subnetwork         = local.host_subnet_uri
+    private_ip_address = data.google_compute_address.static_ip.address
+  }
+
+  network_interface {
+    subnetwork = local.def_subnet_uri
+  }
+
+  service_account {
+    email  = local.vm_sa_email
+    scopes = local.vm_scopes
+  }
+
+  scheduling {
+    resource_policies = [google_compute_resource_policy.vm_schedule[0].self_link]
+  }
+
+  boot_disk_encryption_key {
+    kms_key_self_link = local.kms_compute_key
+  }
+
+  metadata = {
+    startup-script-url     = "gs://${local.startup_script_bucket}/${google_storage_bucket_object.startup_script[0].name}"
+    region                 = local.region
+    zonePostfix            = local.zone_postfix
+    project                = local.my_project
+    yumpackages            = local.yum_packages
+    env                    = local.env
+    nexus3                 = "nexus3"
+    gbmtNexus              = "gbmt-nexus"
+    nexus302               = "nexus302"
+    bucketUriStartup       = "gs://${local.startup_script_bucket}"
+    cloudsql_instance_name = "${local.cloudsql_instance_name}-${local.env}"
+    cloudsql_private_ip    = local.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : ""
+    isGmiTest              = "true"
+  }
+
+  allow_stopping_for_update = true
 }
 
-variable "machine_type" {
-  type        = string
-  description = "The machine type for the VM."
-  default     = "n2-standard-8"
+# --- IAM Binding for the Proxy VM ---
+resource "google_compute_instance_iam_member" "vm_stopper" {
+  count         = local.build_vm ? 1 : 0
+  project       = local.my_project
+  zone          = local.zone
+  instance_name = google_compute_instance.proxy_vm[0].name
+  role          = "roles/compute.instanceAdmin.v1"
+  member        = "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com"
 }
 
-variable "disk_type" {
-  type        = string
-  description = "The type of the boot disk."
-  default     = "pd-standard"
+# --- Google Cloud SQL Instance ---
+resource "google_sql_database_instance" "main_db" {
+  count = local.build_sql ? 1 : 0
+
+  project          = local.my_project
+  name             = "${local.cloudsql_instance_name}-${local.env}"
+  region           = local.region
+  database_version = "POSTGRES_13"
+
+  settings {
+    tier              = "db-custom-2-8192"
+    availability_type = "REGIONAL"
+    disk_autoresize   = true
+    disk_type         = "PD_SSD"
+
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = "projects/${data.google_project.project.name}/global/networks/${local.default_network}"
+    }
+
+    backup_configuration {
+      enabled = true
+    }
+  }
+
+  database_encryption_key {
+    kms_key_name = local.kms_sql_key
+  }
 }
 
-variable "disk_size_gb" {
-  type        = number
-  description = "The size of the boot disk in GB."
-  default     = 300
+# --- Google Cloud SQL Database ---
+resource "google_sql_database" "database" {
+  count    = local.build_sql ? 1 : 0
+  instance = google_sql_database_instance.main_db[0].name
+  name     = local.db_name
 }
 
-variable "zone_postfix" {
-  type        = string
-  description = "The postfix for the zone (e.g., 'a', 'b', 'c')."
-  default     = "a"
+# --- Google Cloud SQL User ---
+resource "google_sql_user" "postgres_admin" {
+  count    = local.build_sql ? 1 : 0
+  instance = google_sql_database_instance.main_db[0].name
+  name     = "postgres"
+  password = local.postgres_password
 }
 
-variable "image_project" {
-  type        = string
-  description = "The project where the VM images are stored."
-  default     = "hsbc-6320774-distcompute-prod"
+# --- IAM Users for Cloud SQL ---
+resource "google_sql_user" "iam_users" {
+  for_each = local.build_sql ? toset(local.iam_user_emails) : []
+  project  = local.my_project
+  instance = google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_USER"
 }
 
-variable "image_family_stage2" {
-  type        = string
-  description = "The image family for stage 2."
-  default     = "gce-rhel8-ver2-stage2"
+# --- IAM Service Accounts for Cloud SQL ---
+resource "google_sql_user" "iam_service_accounts" {
+  for_each = local.build_sql ? toset(local.iam_service_account_emails) : []
+  project  = local.my_project
+  instance = google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
 }
-
-variable "image_family_stage3" {
-  type        = string
-  description = "The image family for stage 3."
-  default     = "query-genie-reco-stage3"
-}
-
-variable "startup_script_local_path" {
-  type        = string
-  description = "The local path to the startup script to be uploaded to GCS."
-  default     = "extraction_startup.sh"
-}
-
-variable "vm_service_account_email" {
-  type        = string
-  description = "The service account to be attached to the VM."
-    "https://www.googleapis.com/auth/devstorage.full_control",
-    "https://www.googleapis.com/auth/cloud-platform",
-  ]
-}
-
-variable "startup_script_bucket" {
-  type        = string
-  description = "The GCS bucket containing startup scripts."
-}
-
-variable "startup_script_path" {
-  type        = string
-  description = "The path within the bucket to the startup script."
-  default     = "query-genie-reco/extraction_startup.sh"
-}
-
-# ------------------------------------------------------------------------------
-# KMS (Key Management Service) Configuration
-# ------------------------------------------------------------------------------
-variable "kms_project" {
-  type        = string
-  description = "The project where KMS keys are located."
-  default     = "hsbc-6320774-kms"
-}
-
-variable "use_hsm_key_for_gcs" {
-  type        = bool
-  description = "If true, use the HSM-backed key for Cloud Storage. Otherwise, use the standard key."
-  default     = false
-}
-
-variable "use_hsm_key_for_gce" {
-  type        = bool
-  description = "If true, use the HSM-backed key for Compute Engine. Otherwise, use the standard key."
-  default     = false
-}
-
-variable "use_hsm_key_for_sql" {
-  type        = bool
-  description = "If true, use the HSM-backed key for Cloud SQL. Otherwise, use the standard key."
-  default     = false
-}
-
-# ------------------------------------------------------------------------------
-# Miscellaneous
-# ------------------------------------------------------------------------------
-variable "yum_packages" {
-  type        = string
-  description = "A space-separated string of yum packages to install."
-  default     = "python312:python3-pip:java-17-openjdk:git"
-}
-
 
