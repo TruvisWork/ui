@@ -168,17 +168,18 @@ resource "null_resource" "check_policy_exists" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      gcloud compute resource-policies describe ${local.policy_instance_name} \
-        --region=${local.region} \
-        --project=${local.my_project} \
-        --impersonate-service-account=${local.build_account_email} \
-        > /dev/null 2>&1 && echo "exists" || \
-      gcloud compute resource-policies create instance-schedule ${local.policy_instance_name} \
-        --region=${local.region} \
-        --vm-stop-schedule="schedule=${local.vm_stop_schedule},timezone=${local.timezone}" \
-        --description="Office Hours for ${local.inst_postfix}" \
-        --project=${local.my_project} \
-        --impersonate-service-account=${local.build_account_email}
+      if gcloud compute resource-policies describe ${local.policy_instance_name} --region=${local.region} --project=${local.my_project} --impersonate-service-account=${local.build_account_email} > /dev/null 2>&1; then
+        echo "Resource policy ${local.policy_instance_name} already exists"
+      else
+        echo "Creating resource policy ${local.policy_instance_name}"
+        gcloud compute resource-policies create instance-schedule ${local.policy_instance_name} \
+          --region=${local.region} \
+          --vm-stop-schedule="${local.vm_stop_schedule}" \
+          --timezone=${local.timezone} \
+          --description="Office Hours for ${local.inst_postfix}" \
+          --project=${local.my_project} \
+          --impersonate-service-account=${local.build_account_email}
+      fi
     EOT
   }
 }
@@ -272,27 +273,28 @@ resource "null_resource" "check_sql_exists" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      gcloud sql instances describe ${local.sql_instance_name} \
-        --project=${local.my_project} \
-        --impersonate-service-account=${local.build_account_email} \
-        > /dev/null 2>&1 && echo "SQL instance exists" || \
-      gcloud sql instances create ${local.sql_instance_name} \
-        --database-version=POSTGRES_13 \
-        --tier=db-custom-2-8192 \
-        --region=${local.region} \
-        --network=projects/${data.google_project.project.name}/global/networks/${local.default_network} \
-        --no-assign-ip \
-        --disk-type=PD_SSD \
-        --disk-size=10 \
-        --enable-bin-log \
-        --backup \
-        --availability-type=REGIONAL \
-        --maintenance-window-day=SUN \
-        --maintenance-window-hour=4 \
-        --database-flags=cloudsql.iam_authentication=on \
-        --disk-encryption-key=${local.kms_sql_key} \
-        --project=${local.my_project} \
-        --impersonate-service-account=${local.build_account_email}
+      if gcloud sql instances describe ${local.sql_instance_name} --project=${local.my_project} --impersonate-service-account=${local.build_account_email} > /dev/null 2>&1; then
+        echo "SQL instance ${local.sql_instance_name} already exists"
+      else
+        echo "Creating SQL instance ${local.sql_instance_name}"
+        gcloud sql instances create ${local.sql_instance_name} \
+          --database-version=POSTGRES_13 \
+          --tier=db-custom-2-8192 \
+          --region=${local.region} \
+          --network=projects/${data.google_project.project.name}/global/networks/${local.default_network} \
+          --no-assign-ip \
+          --disk-type=PD_SSD \
+          --disk-size=10 \
+          --enable-bin-log \
+          --backup \
+          --availability-type=REGIONAL \
+          --maintenance-window-day=SUN \
+          --maintenance-window-hour=4 \
+          --database-flags=cloudsql.iam_authentication=on \
+          --disk-encryption-key=${local.kms_sql_key} \
+          --project=${local.my_project} \
+          --impersonate-service-account=${local.build_account_email}
+      fi
     EOT
   }
 }
