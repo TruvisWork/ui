@@ -1,0 +1,183 @@
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = ">= 4.0"
+    }
+  }
+}
+
+provider "google" {
+  project = var.my_project
+  region  = var.region
+}
+
+# ------------------------------------------------------------------------------
+# Data Sources
+# Fetches information about existing resources
+# ------------------------------------------------------------------------------
+
+data "google_project" "project" {
+  project_id = var.my_project
+}
+
+# ------------------------------------------------------------------------------
+# Locals
+# Replicates the dynamic variables and logic from the shell script
+# ------------------------------------------------------------------------------
+locals {
+  # ---------- Environment Extraction ----------
+  # Extracts the last part of the project name (e.g., "dev" from "hsbc-12010598-fdrasp-dev")
+  env = regex(".*-([^-]+)$", var.my_project)[0]
+
+  # ---------- Service Accounts ----------
+  iam_service_account_emails = [for sa in var.iam_service_account_names : "${sa}@${var.my_project}.iam.gserviceaccount.com"]
+  vm_sa_email                = "query-genie@${var.my_project}.iam.gserviceaccount.com"
+
+  # ---------- Networking ----------
+  host_subnet_uri    = "projects/${var.host_project}/regions/${var.region}/subnetworks/${var.host_subnet}"
+  project_subnet_uri = "projects/${var.my_project}/regions/${var.region}/subnetworks/${var.project_vpc_subnet}"
+  def_subnet_uri     = "projects/${var.my_project}/regions/${var.region}/subnetworks/${var.default_network}"
+
+  # ---------- VM Naming and Zone ----------
+  vm_instance_name = "${var.vm_name}-${var.inst_postfix}-extraction-test"
+  zone             = "${var.region}-${var.zone_postfix}"
+
+  # ---------- Timezone Logic ----------
+  # Replicates the 'case' statement for timezone selection
+  region_to_timezone = {
+    "asia-south1"  = "Asia/Kolkata"
+    "asia-east2"   = "Asia/Hong_Kong"
+    "europe-west2" = "Europe/London"
+  }
+  timezone = lookup(local.region_to_timezone, var.region, "Asia/Hong_Kong") # Default to HK
+
+  # ---------- Startup Script ----------
+  startup_script_url = "gs://${var.startup_script_bucket}/${var.startup_script_path}"
+
+  # ---------- KMS Key Selection Logic ----------
+  # Replicates the 'if' statements for choosing between HSM and standard keys
+  kms_bucket_key = var.use_hsm_key_for_gcs ? "projects/${var.kms_project}/locations/${var.region}/keyRings/cloudStorage/cryptoKeys/HSMCloudStorage" : "projects/${var.kms_project}/locations/${var.region}/keyRings/cloudStorage/cryptoKeys/cloudStorage"
+
+  kms_compute_key = var.use_hsm_key_for_gce ? "projects/${var.kms_project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/HSMComputeEngine" : "projects/${var.kms_project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine"
+
+  kms_sql_key = var.use_hsm_key_for_sql ? "projects/${var.kms_project}/locations/${var.region}/keyRings/sql/cryptoKeys/HSMSqlSharedKey" : "projects/${var.kms_project}/locations/${var.region}/keyRings/sql/cryptoKeys/sqlSharedKey"
+
+  ar_kms_key = "projects/${var.kms_project}/locations/${var.region}/keyRings/ar/cryptoKeys/arSharedKey"
+}
+
+
+# ------------------------------------------------------------------------------
+# Example Resource Definitions
+# These blocks show how to use the variables and locals to create resources.
+# ------------------------------------------------------------------------------
+
+# --- Google Compute Engine (GCE) VM Instance ---
+resource "google_compute_instance" "main_vm" {
+  # This resource will only be created if var.build_vm is true
+  count = var.build_vm ? 1 : 0
+
+  project      = var.my_project
+  zone         = local.zone
+  name         = local.vm_instance_name
+  machine_type = var.machine_type
+
+  boot_disk {
+    initialize_params {
+      image = "projects/${var.image_project}/global/images/family/${var.image_family_stage3}"
+      size  = var.disk_size_gb
+      type  = var.disk_type
+    }
+  }
+
+  network_interface {
+    subnetwork = local.project_subnet_uri
+    # You can add a static IP or leave it as ephemeral
+    # access_config { }
+  }
+
+  service_account {
+    email  = local.vm_sa_email
+    scopes = var.vm_scopes
+  }
+
+  # Use the KMS key selected by the logic in locals
+  boot_disk_encryption_key {
+    kms_key_self_link = local.kms_compute_key
+  }
+
+  metadata = {
+    startup-script-url = local.startup_script_url
+  }
+
+  allow_stopping_for_update = true
+
+  tags = ["terraform-managed", local.env]
+}
+
+
+# --- Google Cloud SQL Instance ---
+resource "google_sql_database_instance" "main_db" {
+  # This resource will only be created if var.build_sql is true
+  count = var.build_sql ? 1 : 0
+
+  project          = var.my_project
+  name             = "${var.cloudsql_instance_name}-${local.env}"
+  region           = var.region
+  database_version = "POSTGRES_13" // Example version, adjust as needed
+
+  settings {
+    tier              = "db-custom-2-8192" // Example tier, adjust as needed
+    availability_type = "REGIONAL"
+    disk_autoresize   = true
+    disk_type         = "PD_SSD"
+
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = "projects/${data.google_project.project.name}/global/networks/${var.default_network}"
+    }
+
+    backup_configuration {
+      enabled = true
+    }
+  }
+
+  // Use the KMS key selected by the logic in locals
+  database_encryption_key {
+    kms_key_name = local.kms_sql_key
+  }
+}
+
+# --- Google Cloud SQL Database ---
+resource "google_sql_database" "database" {
+  count    = var.build_sql ? 1 : 0
+  instance = google_sql_database_instance.main_db[0].name
+  name     = var.db_name
+}
+
+# --- Google Cloud SQL User ---
+resource "google_sql_user" "postgres_admin" {
+  count    = var.build_sql ? 1 : 0
+  instance = google_sql_database_instance.main_db[0].name
+  name     = "postgres"
+  password = var.postgres_password
+}
+
+# --- IAM Users for Cloud SQL ---
+resource "google_sql_user" "iam_users" {
+  for_each = var.build_sql ? toset(var.iam_user_emails) : []
+  project  = var.my_project
+  instance = google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_USER"
+}
+
+# --- IAM Service Accounts for Cloud SQL ---
+resource "google_sql_user" "iam_service_accounts" {
+  for_each = var.build_sql ? toset(local.iam_service_account_emails) : []
+  project  = var.my_project
+  instance = google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+}
+
