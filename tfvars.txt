@@ -1,0 +1,16 @@
+# ------------------------------------------------------------------------------
+# To apply these values, run: terraform apply -var-file="terraform.tfvars"
+# ------------------------------------------------------------------------------
+
+# Example override for project ID
+# my_project = "my-awesome-gcp-project-dev"
+
+# Example override for region
+# region = "us-central1"
+
+# The subnet name for the host VPC
+host_subnet = "my-host-subnet" # You must provide a value for this variable
+
+# The GCS bucket where the startup script is located
+startup_script_bucket = "my-startup-script-bucket" # You must provide a value for this variable
+
