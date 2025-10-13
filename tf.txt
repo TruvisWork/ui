@@ -142,6 +142,22 @@ resource "google_storage_bucket_object" "startup_script" {
 }
 
 # ------------------------------------------------------------------------------
+# Pre-Creation Deletion Step for VM
+# This section ensures the VM is deleted before creation, mirroring the script.
+# ------------------------------------------------------------------------------
+resource "null_resource" "delete_instance_before_create" {
+  count = local.build_vm ? 1 : 0
+
+  triggers = {
+    instance_name = local.vm_instance_name
+  }
+
+  provisioner "local-exec" {
+    command = "gcloud compute instances delete ${local.vm_instance_name} --project=${local.my_project} --zone=${local.zone} --quiet --impersonate-service-account=${local.build_account_email} || true"
+  }
+}
+
+# ------------------------------------------------------------------------------
 # Resource Definitions
 # ------------------------------------------------------------------------------
 
@@ -165,6 +181,9 @@ resource "google_compute_resource_policy" "vm_schedule" {
 # --- GCE Proxy VM Instance (from create-vm.sh) ---
 resource "google_compute_instance" "proxy_vm" {
   count = local.build_vm ? 1 : 0
+
+  # This ensures the deletion command runs before this resource is created.
+  depends_on = [null_resource.delete_instance_before_create]
 
   project      = local.my_project
   zone         = local.zone
