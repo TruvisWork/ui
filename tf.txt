@@ -34,7 +34,7 @@ locals {
   cloudsql_instance_name     = "qg-reco-engine"
   postgres_password          = "Temp@1234"
   db_name                    = "recommendations"
-  vm_name                    = "vmQueryGenie"
+  vm_name                    = "query-genie-reco" # CORRECTED: This now matches the vmName from the script.
   machine_type               = "n2-standard-8"
   disk_type                  = "pd-standard"
   disk_size_gb               = 300
