@@ -44,6 +44,7 @@ locals {
   startup_script_local_path  = "extraction_startup.sh" # IMPORTANT: This local file must exist when you run terraform.
   iam_user_emails            = ["gcp.s.devops-team@hsbc.com"]
   iam_service_account_names  = ["terraform-jenkins-usr", "query-genie"]
+  build_account_name         = "terraform-jenkins-usr"
 
   # --- Feature Flags ---
   build_sql = true
@@ -84,6 +85,7 @@ locals {
   # ----------------------------------------------------------------------------
   env                        = regex(".*-([^-]+)$", local.my_project)[0]
   iam_service_account_emails = [for sa in local.iam_service_account_names : "${sa}@${local.my_project}.iam.gserviceaccount.com"]
+  build_account_email        = "${local.build_account_name}@${local.my_project}.iam.gserviceaccount.com"
   vm_sa_email                = "query-genie@${local.my_project}.iam.gserviceaccount.com"
   host_subnet_uri            = "projects/${local.host_project}/regions/${local.region}/subnetworks/${local.host_subnet}"
   project_subnet_uri         = "projects/${local.my_project}/regions/${local.region}/subnetworks/${local.project_vpc_subnet}"
@@ -106,6 +108,9 @@ locals {
 provider "google" {
   project = local.my_project
   region  = local.region
+
+  # This block replicates the `--impersonate-service-account` flag from the scripts.
+  impersonate_service_account = local.build_account_email
 }
 
 # ------------------------------------------------------------------------------
@@ -130,6 +135,9 @@ resource "google_storage_bucket_object" "startup_script" {
   name   = local.startup_script_path
   bucket = local.startup_script_bucket
   source = local.startup_script_local_path
+
+  # Terraform implicitly handles the checksum logic. It will only update the
+  # GCS object if the local file's content has changed.
 }
 
 # ------------------------------------------------------------------------------
@@ -150,12 +158,38 @@ resource "google_compute_resource_policy" "vm_schedule" {
 }
 
 # ------------------------------------------------------------------------------
+# Pre-Creation Steps
+# ------------------------------------------------------------------------------
+
+# This resource replicates the script's logic of deleting the VM if it exists
+# before attempting to create a new one.
+resource "null_resource" "delete_instance_before_create" {
+  count = local.build_vm ? 1 : 0
+
+  # This trigger ensures the deletion command re-runs if the instance name changes.
+  triggers = {
+    instance_name = local.vm_instance_name
+  }
+
+  provisioner "local-exec" {
+    # This command attempts to delete the instance. The `|| true` ensures that
+    # if the instance doesn't exist (and the command fails), Terraform doesn't
+    # stop the entire process.
+    command = "gcloud compute instances delete ${local.vm_instance_name} --project=${local.my_project} --zone=${local.zone} --quiet --impersonate-service-account=${local.build_account_email} || true"
+  }
+}
+
+# ------------------------------------------------------------------------------
 # Resource Definitions
 # ------------------------------------------------------------------------------
 
 # --- GCE Proxy VM Instance (from create-vm.sh) ---
 resource "google_compute_instance" "proxy_vm" {
   count = local.build_vm ? 1 : 0
+
+  # This depends_on ensures that the deletion command from the null_resource
+  # runs before Terraform attempts to create this instance.
+  depends_on = [null_resource.delete_instance_before_create]
 
   project      = local.my_project
   zone         = local.zone
@@ -219,7 +253,8 @@ resource "google_compute_instance_iam_member" "vm_stopper" {
   project       = local.my_project
   zone          = local.zone
   instance_name = google_compute_instance.proxy_vm[0].name
-  role          = "roles/compute.instanceAdmin.v1"
+  # This now uses the exact custom role from the script.
+  role          = "organizations/103829057055/roles/cr.instancestopStart"
   member        = "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com"
 }
 
@@ -284,5 +319,24 @@ resource "google_sql_user" "iam_service_accounts" {
   instance = google_sql_database_instance.main_db[0].name
   name     = each.key
   type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+}
+
+# ------------------------------------------------------------------------------
+# Outputs
+# Displays information about created resources after apply.
+# ------------------------------------------------------------------------------
+output "proxy_vm_primary_ip" {
+  description = "The primary internal IP address of the proxy VM."
+  value       = local.build_vm ? google_compute_instance.proxy_vm[0].network_interface[0].network_ip : "VM not built."
+}
+
+output "proxy_vm_secondary_ip" {
+  description = "The secondary internal IP address of the proxy VM."
+  value       = local.build_vm ? google_compute_instance.proxy_vm[0].network_interface[1].network_ip : "VM not built."
+}
+
+output "cloudsql_instance_connection_name" {
+  description = "The connection name for the Cloud SQL instance."
+  value       = local.build_sql ? google_sql_database_instance.main_db[0].connection_name : "SQL not built."
 }
 
