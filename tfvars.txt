@@ -14,3 +14,9 @@ host_subnet = "my-host-subnet" # You must provide a value for this variable
 # The GCS bucket where the startup script is located
 startup_script_bucket = "my-startup-script-bucket" # You must provide a value for this variable
 
+# Static IP for the proxy VM
+ip_static = "10.0.1.10" # You must provide a specific internal IP address
+
+# Local path to your startup script
+startup_script_local_path = "scripts/extraction_startup.sh"
+
