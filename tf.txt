@@ -25,6 +25,41 @@ variable "inst_postfix" {
   default     = "dev-9999"
 }
 
+variable "ip_static" {
+  type        = string
+  description = "The static internal IP address for the proxy VM's primary network interface."
+  default     = "query-genie-test" # Example from params.sh
+}
+
+variable "policy_name" {
+  type        = string
+  description = "The name of the resource policy for scheduling the VM."
+  default     = "office-hours"
+}
+
+variable "vm_stop_schedule" {
+  type        = string
+  description = "The cron expression for stopping the VM."
+  default     = "0 19 * * *" # 7 PM daily
+}
+
+variable "network_tags" {
+  type        = list(string)
+  description = "A list of network tags to apply to the proxy VM."
+  default = [
+    "fwtag-all-dev-inout-ccs-collectors-production",
+    "fwtag-all-dev-out-alm-github",
+    "fwtag-all-dev-out-alm-nexus-3-production",
+    "fwtag-all-dev-out-efx-nexus-3-production",
+    "fwtag-all-dev-out-gl-repo",
+    "tt-6320774-vpchost-eu-cinternal-drn-a-i-ssh",
+    "tt-6320774-vpchost-asia-cinternal-drn-a-i-ssh",
+    "fwtag-cloudsql-access",
+    "fwtag-all-dev-out-efx-nexus-2-production",
+    "fwtag-all-dev-out-gbm-nexus-production"
+  ]
+}
+
 # ------------------------------------------------------------------------------
 # Feature Flags
 # ------------------------------------------------------------------------------
@@ -151,15 +186,15 @@ variable "image_family_stage3" {
   default     = "query-genie-reco-stage3"
 }
 
-variable "vm_scopes" {
-  type        = list(string)
-  description = "API access scopes for the VM instance."
-  default = [
-    "https://www.googleapis.com/auth/compute",
-    "https://www.googleapis.com/auth/logging.write",
-    "https://www.googleapis.com/auth/monitoring.write",
-    "https://www.googleapis.com/auth/bigquery",
-    "https://www.googleapis.com/auth/sqlservice.admin",
+variable "startup_script_local_path" {
+  type        = string
+  description = "The local path to the startup script to be uploaded to GCS."
+  default     = "extraction_startup.sh"
+}
+
+variable "vm_service_account_email" {
+  type        = string
+  description = "The service account to be attached to the VM."
     "https://www.googleapis.com/auth/devstorage.full_control",
     "https://www.googleapis.com/auth/cloud-platform",
   ]
@@ -211,4 +246,5 @@ variable "yum_packages" {
   description = "A space-separated string of yum packages to install."
   default     = "python312:python3-pip:java-17-openjdk:git"
 }
+
 
