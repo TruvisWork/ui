@@ -1,0 +1,246 @@
+# ------------------------------------------------------------------------------
+# Environment-Specific Variables
+# ------------------------------------------------------------------------------
+variable "my_project" {
+  description = "GCP Project ID"
+  type        = string
+}
+
+variable "region" {
+  description = "Primary GCP region"
+  type        = string
+}
+
+variable "region2" {
+  description = "Secondary GCP region"
+  type        = string
+}
+
+variable "host_project" {
+  description = "Host project for VPC"
+  type        = string
+}
+
+variable "ip_static_name" {
+  description = "Name of the static IP address"
+  type        = string
+}
+
+variable "cloudsql_instance_name" {
+  description = "Base name for Cloud SQL instance"
+  type        = string
+}
+
+variable "vm_name" {
+  description = "Base name for VM instance"
+  type        = string
+}
+
+# ------------------------------------------------------------------------------
+# Common Configuration Variables
+# ------------------------------------------------------------------------------
+variable "zone_postfix" {
+  description = "Zone postfix (a, b, c)"
+  type        = string
+  default     = "a"
+}
+
+variable "inst_postfix" {
+  description = "Instance name postfix"
+  type        = string
+  default     = "dev-9999"
+}
+
+variable "host_subnet" {
+  description = "Host subnet name pattern"
+  type        = string
+  default     = "internal-vpc1"
+}
+
+variable "project_vpc_subnet" {
+  description = "Project VPC subnet name"
+  type        = string
+  default     = "net1"
+}
+
+variable "default_network" {
+  description = "Default network name"
+  type        = string
+  default     = "hsbc-default-network"
+}
+
+variable "kms_project" {
+  description = "KMS project ID"
+  type        = string
+  default     = "hsbc-6320774-kms"
+}
+
+variable "image_project" {
+  description = "Image project ID"
+  type        = string
+  default     = "hsbc-6320774-distcompute-prod"
+}
+
+variable "image_family_stage2" {
+  description = "Image family for stage 2"
+  type        = string
+  default     = "gce-rhel8-ver2-stage2"
+}
+
+variable "image_family_stage3" {
+  description = "Image family for stage 3"
+  type        = string
+  default     = "query-genie-reco-stage3"
+}
+
+variable "policy_name" {
+  description = "Resource policy name"
+  type        = string
+  default     = "office-hours"
+}
+
+variable "vm_stop_schedule" {
+  description = "VM stop schedule in cron format"
+  type        = string
+  default     = "0 19 * * *"
+}
+
+variable "postgres_password" {
+  description = "PostgreSQL admin password"
+  type        = string
+  default     = "Temp@1234"
+  sensitive   = true
+}
+
+variable "db_name" {
+  description = "Database name"
+  type        = string
+  default     = "recommendations"
+}
+
+variable "machine_type" {
+  description = "VM machine type"
+  type        = string
+  default     = "n2-standard-8"
+}
+
+variable "disk_type" {
+  description = "Disk type"
+  type        = string
+  default     = "pd-standard"
+}
+
+variable "disk_size_gb" {
+  description = "Disk size in GB"
+  type        = number
+  default     = 300
+}
+
+variable "yum_packages" {
+  description = "Colon-separated list of yum packages to install"
+  type        = string
+  default     = "python312:python3-pip:java-17-openjdk:git"
+}
+
+variable "startup_script_path" {
+  description = "Path to startup script in GCS bucket"
+  type        = string
+  default     = "query-genie-reco/extraction_startup.sh"
+}
+
+variable "startup_script_local_path" {
+  description = "Local path to startup script"
+  type        = string
+  default     = "extraction_startup.sh"
+}
+
+variable "iam_user_emails" {
+  description = "List of IAM user emails for Cloud SQL access"
+  type        = list(string)
+  default     = []
+}
+
+variable "iam_service_account_names" {
+  description = "List of service account names (without @project.iam.gserviceaccount.com)"
+  type        = list(string)
+  default     = ["terraform-jenkins-usr", "query-genie"]
+}
+
+variable "build_account_name" {
+  description = "Build service account name"
+  type        = string
+  default     = "terraform-jenkins-usr"
+}
+
+# ------------------------------------------------------------------------------
+# Feature Flags
+# ------------------------------------------------------------------------------
+variable "build_sql" {
+  description = "Whether to build Cloud SQL resources"
+  type        = bool
+  default     = true
+}
+
+variable "build_vm" {
+  description = "Whether to build VM resources"
+  type        = bool
+  default     = true
+}
+
+# ------------------------------------------------------------------------------
+# KMS Flags
+# ------------------------------------------------------------------------------
+variable "use_hsm_key_for_gcs" {
+  description = "Use HSM key for GCS encryption"
+  type        = bool
+  default     = false
+}
+
+variable "use_hsm_key_for_gce" {
+  description = "Use HSM key for GCE encryption"
+  type        = bool
+  default     = false
+}
+
+variable "use_hsm_key_for_sql" {
+  description = "Use HSM key for Cloud SQL encryption"
+  type        = bool
+  default     = false
+}
+
+# ------------------------------------------------------------------------------
+# VM Scopes
+# ------------------------------------------------------------------------------
+variable "vm_scopes" {
+  description = "List of OAuth scopes for VM service account"
+  type        = list(string)
+  default = [
+    "https://www.googleapis.com/auth/compute",
+    "https://www.googleapis.com/auth/logging.write",
+    "https://www.googleapis.com/auth/monitoring.write",
+    "https://www.googleapis.com/auth/bigquery",
+    "https://www.googleapis.com/auth/sqlservice.admin",
+    "https://www.googleapis.com/auth/devstorage.full_control",
+    "https://www.googleapis.com/auth/cloud-platform",
+  ]
+}
+
+# ------------------------------------------------------------------------------
+# Network Tags
+# ------------------------------------------------------------------------------
+variable "network_tags" {
+  description = "List of network tags for VM"
+  type        = list(string)
+  default = [
+    "fwtag-all-dev-inout-ccs-collectors-production",
+    "fwtag-all-dev-out-alm-github",
+    "fwtag-all-dev-out-alm-nexus-3-production",
+    "fwtag-all-dev-out-efx-nexus-3-production",
+    "fwtag-all-dev-out-gl-repo",
+    "tt-6320774-vpchost-eu-cinternal-drn-a-i-ssh",
+    "tt-6320774-vpchost-asia-cinternal-drn-a-i-ssh",
+    "fwtag-cloudsql-access",
+    "fwtag-all-dev-out-efx-nexus-2-production",
+    "fwtag-all-dev-out-gbm-nexus-production"
+  ]
+}
