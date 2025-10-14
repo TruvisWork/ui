@@ -1,6 +1,12 @@
-gcp_project_id         = "hsbc-12010598-fdrasp-dev"
-region                 = "asia-east2"
-host_project           = "hsbc-6320774-vpchost-asia"
-ip_static_name         = "query-genie-test"
-cloudsql_instance_name = "qg-reco-engine-dev"
-vm_instance_name       = "query-genie-reco-dev-9999"
+# ------------------------------------------------------------------------------
+# Development Environment Configuration
+# ------------------------------------------------------------------------------
+
+# Environment-Specific Values
+my_project              = "hsbc-12010598-fdrasp-dev"
+region                  = "asia-east2"
+region2                 = "asia-south1"
+host_project            = "hsbc-6320774-vpchost-asia"
+ip_static_name          = "query-genie-test"
+cloudsql_instance_name  = "qg-reco-engine"
+vm_name                 = "query-genie-reco"
