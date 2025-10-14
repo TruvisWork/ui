@@ -1,0 +1,175 @@
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = ">= 4.0"
+    }
+  }
+}
+
+# ------------------------------------------------------------------------------
+# Locals - Derived Values
+# ------------------------------------------------------------------------------
+locals {
+  env                        = regex(".*-([^-]+)$", var.my_project)[0]
+  iam_service_account_emails = [for sa in var.iam_service_account_names : "${sa}@${var.my_project}.iam.gserviceaccount.com"]
+  build_account_email        = "${var.build_account_name}@${var.my_project}.iam.gserviceaccount.com"
+  vm_sa_email                = "query-genie@${var.my_project}.iam.gserviceaccount.com"
+  host_subnet_uri            = "projects/${var.host_project}/regions/${var.region}/subnetworks/${var.host_subnet}"
+  def_subnet_uri             = "projects/${var.my_project}/regions/${var.region}/subnetworks/${var.default_network}"
+  vm_instance_name           = "${var.vm_name}-${var.inst_postfix}-extraction-test"
+  policy_instance_name       = "${var.policy_name}-${var.inst_postfix}"
+  sql_instance_name          = "${var.cloudsql_instance_name}-${local.env}"
+  zone                       = "${var.region}-${var.zone_postfix}"
+  timezone                   = lookup({ "asia-east2" = "Asia/Hong_Kong" }, var.region, "Asia/Hong_Kong")
+  startup_script_bucket      = "${var.my_project}-query-genie-reco"
+  kms_compute_key            = "projects/${var.kms_project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine"
+  kms_sql_key                = "projects/${var.kms_project}/locations/${var.region}/keyRings/sql/cryptoKeys/sqlSharedKey"
+}
+
+provider "google" {
+  project                     = var.my_project
+  region                      = var.region
+  impersonate_service_account = local.build_account_email
+}
+
+# ------------------------------------------------------------------------------
+# Data Sources
+# ------------------------------------------------------------------------------
+data "google_project" "project" {
+  project_id = var.my_project
+}
+
+data "google_compute_address" "static_ip" {
+  name = var.ip_static_name
+}
+
+# ------------------------------------------------------------------------------
+# GCS Resources
+# ------------------------------------------------------------------------------
+resource "google_storage_bucket_object" "startup_script" {
+  count  = var.build_vm ? 1 : 0
+  name   = var.startup_script_path
+  bucket = local.startup_script_bucket
+  source = var.startup_script_local_path
+}
+
+# ------------------------------------------------------------------------------
+# NATIVE Resource Policy (Replaces the check_policy_exists script)
+# ------------------------------------------------------------------------------
+resource "google_compute_resource_policy" "office_hours" {
+  count   = var.build_vm ? 1 : 0
+  name    = local.policy_instance_name
+  project = var.my_project
+  region  = var.region
+  description = "Office Hours for ${var.inst_postfix}"
+
+  instance_schedule_policy {
+    vm_stop_schedule = var.vm_stop_schedule
+    time_zone        = local.timezone
+  }
+}
+
+# ------------------------------------------------------------------------------
+# NATIVE Cloud SQL Instance (Replaces the check_sql_exists script)
+# ------------------------------------------------------------------------------
+resource "google_sql_database_instance" "main_db" {
+  count               = var.build_sql ? 1 : 0
+  name                = local.sql_instance_name
+  project             = var.my_project
+  database_version    = "POSTGRES_13"
+  region              = var.region
+  deletion_protection = false
+
+  settings {
+    tier              = "db-custom-2-8192"
+    availability_type = "REGIONAL"
+    disk_type         = "PD_SSD"
+    disk_size         = 10
+    backup_configuration {
+      enabled    = true
+      start_time = "04:00"
+    }
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = "projects/${var.my_project}/global/networks/${var.default_network}"
+    }
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+  }
+  encryption_key_name = local.kms_sql_key
+}
+
+# ------------------------------------------------------------------------------
+# GCE Proxy VM Instance (Replaces the delete_instance_before_create script)
+# ------------------------------------------------------------------------------
+resource "google_compute_instance" "proxy_vm" {
+  count        = var.build_vm ? 1 : 0
+  project      = var.my_project
+  zone         = local.zone
+  name         = local.vm_instance_name
+  machine_type = var.machine_type
+  tags         = var.network_tags
+  deletion_protection = false # Set to 'true' for production
+
+  boot_disk {
+    initialize_params {
+      image = "projects/${var.image_project}/global/images/family/${var.image_family_stage2}"
+      size  = var.disk_size_gb
+      type  = var.disk_type
+    }
+    kms_key_self_link = local.kms_compute_key
+  }
+
+  network_interface {
+    subnetwork = local.host_subnet_uri
+    network_ip = data.google_compute_address.static_ip.address
+  }
+
+  network_interface {
+    subnetwork = local.def_subnet_uri
+  }
+
+  service_account {
+    email  = local.vm_sa_email
+    scopes = var.vm_scopes
+  }
+
+  # NATIVE way to attach the resource policy (Replaces the add_vm_schedule script)
+  scheduling {
+    resource_policies = [google_compute_resource_policy.office_hours[0].self_link]
+  }
+
+  metadata = {
+    startup-script-url     = "gs://${local.startup_script_bucket}/${google_storage_bucket_object.startup_script[0].name}"
+    cloudsql_private_ip    = var.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : ""
+  }
+
+  allow_stopping_for_update = true
+}
+
+# --- The rest of your resources remain the same as they were already correct ---
+
+# ------------------------------------------------------------------------------
+# Cloud SQL Database & Users
+# ------------------------------------------------------------------------------
+resource "google_sql_database" "database" {
+  count    = var.build_sql ? 1 : 0
+  instance = google_sql_database_instance.main_db[0].name
+  name     = var.db_name
+}
+
+resource "google_sql_user" "postgres_admin" {
+  count    = var.build_sql ? 1 : 0
+  instance = google_sql_database_instance.main_db[0].name
+  name     = "postgres"
+  password = var.postgres_password
+}
+# ... (iam_users and iam_service_accounts resources would go here, unchanged) ...
+
+# ------------------------------------------------------------------------------
+# Outputs
+# ------------------------------------------------------------------------------
+# ... (outputs would go here, unchanged) ...
