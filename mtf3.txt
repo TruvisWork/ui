@@ -7,109 +7,330 @@ terraform {
   }
 }
 
-provider "google" {
-  project = var.gcp_project_id
-  region  = var.region
-
-  impersonate_service_account = "terraform-jenkins-usr@${var.gcp_project_id}.iam.gserviceaccount.com"
+# ------------------------------------------------------------------------------
+# Locals - Derived Values
+# ------------------------------------------------------------------------------
+locals {
+  env                        = regex(".*-([^-]+)$", var.my_project)[0]
+  iam_service_account_emails = [for sa in var.iam_service_account_names : "${sa}@${var.my_project}.iam.gserviceaccount.com"]
+  build_account_email        = "${var.build_account_name}@${var.my_project}.iam.gserviceaccount.com"
+  vm_sa_email                = "query-genie@${var.my_project}.iam.gserviceaccount.com"
+  host_subnet_uri            = "projects/${var.host_project}/regions/${var.region}/subnetworks/${var.host_subnet}"
+  project_subnet_uri         = "projects/${var.my_project}/regions/${var.region}/subnetworks/${var.project_vpc_subnet}"
+  def_subnet_uri             = "projects/${var.my_project}/regions/${var.region}/subnetworks/${var.default_network}"
+  vm_instance_name           = "${var.vm_name}-${var.inst_postfix}-extraction-test"
+  policy_instance_name       = "${var.policy_name}-${var.inst_postfix}"
+  sql_instance_name          = "${var.cloudsql_instance_name}-${local.env}"
+  zone                       = "${var.region}-${var.zone_postfix}"
+  region_to_timezone = {
+    "asia-south1"  = "Asia/Kolkata"
+    "asia-east2"   = "Asia/Hong_Kong"
+    "europe-west2" = "Europe/London"
+  }
+  timezone                   = lookup(local.region_to_timezone, var.region, "Asia/Hong_Kong")
+  startup_script_url         = "gs://${var.startup_script_bucket}/${var.startup_script_path}"
+  startup_script_bucket      = "${var.my_project}-query-genie-reco"
+  kms_bucket_key             = var.use_hsm_key_for_gcs ? "projects/${var.kms_project}/locations/${var.region}/keyRings/cloudStorage/cryptoKeys/HSMCloudStorage" : "projects/${var.kms_project}/locations/${var.region}/keyRings/cloudStorage/cryptoKeys/cloudStorage"
+  kms_compute_key            = var.use_hsm_key_for_gce ? "projects/${var.kms_project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/HSMComputeEngine" : "projects/${var.kms_project}/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine"
+  kms_sql_key                = var.use_hsm_key_for_sql ? "projects/${var.kms_project}/locations/${var.region}/keyRings/sql/cryptoKeys/HSMSqlSharedKey" : "projects/${var.kms_project}/locations/${var.region}/keyRings/sql/cryptoKeys/sqlSharedKey"
+  ar_kms_key                 = "projects/${var.kms_project}/locations/${var.region}/keyRings/ar/cryptoKeys/arSharedKey"
 }
 
-# --- Data Sources ---
-data "google_project" "project" {}
+provider "google" {
+  project = var.my_project
+  region  = var.region
+
+  impersonate_service_account = local.build_account_email
+}
+
+# ------------------------------------------------------------------------------
+# Data Sources
+# ------------------------------------------------------------------------------
+data "google_project" "project" {
+  project_id = var.my_project
+}
 
 data "google_compute_address" "static_ip" {
   name = var.ip_static_name
 }
 
-data "google_secret_manager_secret_version" "postgres_password" {
-  secret = "postgres-admin-password" # Assumes a secret with this name exists in each project
-}
+# ------------------------------------------------------------------------------
+# GCS Resources
+# ------------------------------------------------------------------------------
+resource "google_storage_bucket_object" "startup_script" {
+  count  = var.build_vm ? 1 : 0
+  name   = var.startup_script_path
+  bucket = local.startup_script_bucket
+  source = var.startup_script_local_path
 
-# --- Resource Policy for VM Office Hours ---
-resource "google_compute_resource_policy" "office_hours" {
-  name    = "office-hours-for-${var.vm_instance_name}"
-  project = var.gcp_project_id
-  region  = var.region
+  detect_md5hash = "different"
 
-  instance_schedule_policy {
-    vm_stop_schedule = "0 19 * * *"
-    time_zone        = "Asia/Hong_Kong"
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
-# --- GCE Proxy VM Instance ---
+# ------------------------------------------------------------------------------
+# VM Pre-Creation Deletion
+# This ensures the VM is always deleted before creation (shell script behavior)
+# ------------------------------------------------------------------------------
+resource "null_resource" "delete_instance_before_create" {
+  count = var.build_vm ? 1 : 0
+
+  triggers = {
+    # This ensures the VM is recreated every time
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    command = "gcloud compute instances delete ${local.vm_instance_name} --project=${var.my_project} --zone=${local.zone} --quiet --impersonate-service-account=${local.build_account_email} || true"
+  }
+}
+
+# ------------------------------------------------------------------------------
+# Resource Policy
+# ------------------------------------------------------------------------------
+resource "null_resource" "check_policy_exists" {
+  count = var.build_vm ? 1 : 0
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      if gcloud compute resource-policies describe ${local.policy_instance_name} --region=${var.region} --project=${var.my_project} --impersonate-service-account=${local.build_account_email} > /dev/null 2>&1; then
+        echo "Resource policy ${local.policy_instance_name} already exists"
+      else
+        echo "Creating resource policy ${local.policy_instance_name}"
+        gcloud compute resource-policies create instance-schedule ${local.policy_instance_name} \
+          --region=${var.region} \
+          --vm-stop-schedule="${var.vm_stop_schedule}" \
+          --timezone=${local.timezone} \
+          --description="Office Hours for ${var.inst_postfix}" \
+          --project=${var.my_project} \
+          --impersonate-service-account=${local.build_account_email}
+      fi
+    EOT
+  }
+}
+
+# ------------------------------------------------------------------------------
+# GCE Proxy VM Instance
+# ------------------------------------------------------------------------------
 resource "google_compute_instance" "proxy_vm" {
-  project      = var.gcp_project_id
-  zone         = "${var.region}-a"
-  name         = var.vm_instance_name
-  machine_type = "n2-standard-8"
+  count = var.build_vm ? 1 : 0
+
+  depends_on = [null_resource.delete_instance_before_create]
+
+  project      = var.my_project
+  zone         = local.zone
+  name         = local.vm_instance_name
+  machine_type = var.machine_type
   tags         = var.network_tags
 
   boot_disk {
     initialize_params {
-      image = "projects/hsbc-6320774-distcompute-prod/global/images/family/gce-rhel8-ver2-stage2"
-      size  = 300
-      type  = "pd-standard"
+      image = "projects/${var.image_project}/global/images/family/${var.image_family_stage2}"
+      size  = var.disk_size_gb
+      type  = var.disk_type
     }
-    kms_key_self_link = "projects/hsbc-6320774-kms/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine"
+    device_name       = local.vm_instance_name
+    kms_key_self_link = local.kms_compute_key
   }
 
   network_interface {
-    subnetwork = "projects/${var.host_project}/regions/${var.region}/subnetworks/${var.host_project}-internal-vpc1"
+    subnetwork = local.host_subnet_uri
     network_ip = data.google_compute_address.static_ip.address
   }
 
   network_interface {
-    subnetwork = "projects/${var.gcp_project_id}/regions/${var.region}/subnetworks/hsbc-default-network"
+    subnetwork = local.def_subnet_uri
   }
 
   service_account {
-    email  = "query-genie@${var.gcp_project_id}.iam.gserviceaccount.com"
-    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+    email  = local.vm_sa_email
+    scopes = var.vm_scopes
   }
 
-  scheduling {
-    resource_policies = [google_compute_resource_policy.office_hours.self_link]
+  metadata = {
+    startup-script-url     = "gs://${local.startup_script_bucket}/${google_storage_bucket_object.startup_script[0].name}"
+    region                 = var.region
+    zonePostfix            = var.zone_postfix
+    project                = var.my_project
+    yumpackages            = var.yum_packages
+    env                    = local.env
+    nexus3                 = "nexus3"
+    gbmtNexus              = "gbmt-nexus"
+    nexus302               = "nexus302"
+    bucketUriStartup       = "gs://${local.startup_script_bucket}"
+    cloudsql_instance_name = local.sql_instance_name
+    cloudsql_private_ip    = var.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : ""
+    isGmiTest              = "true"
   }
 
   allow_stopping_for_update = true
+
+  lifecycle {
+    ignore_changes = [scheduling]
+  }
 }
 
-# --- Cloud SQL Instance ---
+# ------------------------------------------------------------------------------
+# IAM Binding for VM
+# ------------------------------------------------------------------------------
+resource "google_compute_instance_iam_member" "vm_stopper" {
+  count         = var.build_vm ? 1 : 0
+  project       = var.my_project
+  zone          = local.zone
+  instance_name = google_compute_instance.proxy_vm[0].name
+  role          = "organizations/103829057055/roles/cr.instancestopStart"
+  member        = "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com"
+}
+
+# ------------------------------------------------------------------------------
+# Attach Resource Policy
+# ------------------------------------------------------------------------------
+resource "null_resource" "add_vm_schedule" {
+  count = var.build_vm ? 1 : 0
+  depends_on = [
+    google_compute_instance.proxy_vm,
+    google_compute_instance_iam_member.vm_stopper,
+    null_resource.check_policy_exists
+  ]
+
+  provisioner "local-exec" {
+    command = "gcloud compute instances add-resource-policies ${google_compute_instance.proxy_vm[0].name} --resource-policies=${local.policy_instance_name} --zone=${local.zone} --project=${var.my_project} --impersonate-service-account=${local.build_account_email} || true"
+  }
+}
+
+# ------------------------------------------------------------------------------
+# Cloud SQL Instance - Native Terraform Resource
+# ------------------------------------------------------------------------------
 resource "google_sql_database_instance" "main_db" {
-  name                = var.cloudsql_instance_name
-  project             = var.gcp_project_id
-  region              = var.region
-  database_version    = "POSTGRES_13"
-  deletion_protection = terraform.workspace == "prod" # Enable deletion protection only for prod workspace
+  count            = var.build_sql ? 1 : 0
+  name             = local.sql_instance_name
+  project          = var.my_project
+  database_version = "POSTGRES_13"
+  region           = var.region
 
   settings {
     tier              = "db-custom-2-8192"
     availability_type = "REGIONAL"
     disk_type         = "PD_SSD"
     disk_size         = 10
+
+    backup_configuration {
+      enabled    = true
+      start_time = "04:00"
+      binary_log_enabled = true
+    }
+
+    maintenance_window {
+      day  = 7  # Sunday
+      hour = 4
+    }
+
     ip_configuration {
       ipv4_enabled    = false
-      private_network = "projects/${var.gcp_project_id}/global/networks/hsbc-default-network"
+      private_network = "projects/${var.my_project}/global/networks/${var.default_network}"
     }
-    backup_configuration {
-      enabled            = true
-      binary_log_enabled = true
+
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
     }
   }
 
-  disk_encryption_key_name = "projects/hsbc-6320774-kms/locations/${var.region}/keyRings/sql/cryptoKeys/sqlSharedKey"
+  encryption_key_name = local.kms_sql_key
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes = [
+      settings[0].disk_size
+    ]
+  }
 }
 
-# --- Cloud SQL Database ---
+# ------------------------------------------------------------------------------
+# Cloud SQL Database
+# ------------------------------------------------------------------------------
 resource "google_sql_database" "database" {
-  instance = google_sql_database_instance.main_db.name
-  name     = "recommendations"
+  count    = var.build_sql ? 1 : 0
+  instance = google_sql_database_instance.main_db[0].name
+  name     = var.db_name
+  project  = var.my_project
+
+  lifecycle {
+    ignore_changes = [instance]
+  }
 }
 
-# --- Cloud SQL Postgres Admin User ---
+# ------------------------------------------------------------------------------
+# Cloud SQL User
+# ------------------------------------------------------------------------------
 resource "google_sql_user" "postgres_admin" {
-  instance = google_sql_database_instance.main_db.name
+  count    = var.build_sql ? 1 : 0
+  instance = google_sql_database_instance.main_db[0].name
   name     = "postgres"
-  password = data.google_secret_manager_secret_version.postgres_password.secret_data
+  password = var.postgres_password
+  project  = var.my_project
+
+  lifecycle {
+    ignore_changes = [password, instance]
+  }
+}
+
+# ------------------------------------------------------------------------------
+# IAM Users for Cloud SQL
+# ------------------------------------------------------------------------------
+resource "google_sql_user" "iam_users" {
+  for_each = var.build_sql ? toset(var.iam_user_emails) : []
+  project  = var.my_project
+  instance = google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_USER"
+
+  lifecycle {
+    ignore_changes = [instance]
+  }
+}
+
+# ------------------------------------------------------------------------------
+# IAM Service Accounts for Cloud SQL
+# ------------------------------------------------------------------------------
+resource "google_sql_user" "iam_service_accounts" {
+  for_each = var.build_sql ? toset(local.iam_service_account_emails) : []
+  project  = var.my_project
+  instance = google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+
+  lifecycle {
+    ignore_changes = [instance]
+  }
+}
+
+# ------------------------------------------------------------------------------
+# Outputs
+# ------------------------------------------------------------------------------
+output "environment" {
+  description = "Current environment"
+  value       = local.env
+}
+
+output "proxy_vm_primary_ip" {
+  description = "The primary internal IP address of the proxy VM."
+  value       = var.build_vm ? google_compute_instance.proxy_vm[0].network_interface[0].network_ip : "VM not built."
+}
+
+output "proxy_vm_secondary_ip" {
+  description = "The secondary internal IP address of the proxy VM."
+  value       = var.build_vm ? google_compute_instance.proxy_vm[0].network_interface[1].network_ip : "VM not built."
+}
+
+output "cloudsql_instance_connection_name" {
+  description = "The connection name for the Cloud SQL instance."
+  value       = var.build_sql ? google_sql_database_instance.main_db[0].connection_name : "SQL not built."
+}
+
+output "cloudsql_private_ip" {
+  description = "The private IP of the Cloud SQL instance."
+  value       = var.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : "SQL not built."
 }
