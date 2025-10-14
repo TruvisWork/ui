@@ -71,53 +71,86 @@ resource "google_storage_bucket_object" "startup_script" {
 }
 
 # ------------------------------------------------------------------------------
-# VM Pre-Creation Deletion
-# This ensures the VM is always deleted before creation (shell script behavior)
+# Resource Policy for VM Scheduling
 # ------------------------------------------------------------------------------
-resource "null_resource" "delete_instance_before_create" {
-  count = var.build_vm ? 1 : 0
+resource "google_compute_resource_policy" "vm_schedule" {
+  count   = var.build_vm ? 1 : 0
+  name    = local.policy_instance_name
+  region  = var.region
+  project = var.my_project
 
-  triggers = {
-    # This ensures the VM is recreated every time
-    always_run = timestamp()
+  instance_schedule_policy {
+    vm_stop_schedule {
+      schedule = var.vm_stop_schedule
+    }
+    time_zone = local.timezone
   }
 
-  provisioner "local-exec" {
-    command = "gcloud compute instances delete ${local.vm_instance_name} --project=${var.my_project} --zone=${local.zone} --quiet --impersonate-service-account=${local.build_account_email} || true"
-  }
+  description = "Office Hours for ${var.inst_postfix}"
 }
 
 # ------------------------------------------------------------------------------
-# Resource Policy
+# Cloud SQL Instance - Native Terraform Resource
+# Created BEFORE VM so VM can reference SQL private IP
+# You should import this before running: 
+# terraform import 'google_sql_database_instance.main_db[0]' projects/<project>/instances/<instance-name>
 # ------------------------------------------------------------------------------
-resource "null_resource" "check_policy_exists" {
-  count = var.build_vm ? 1 : 0
+resource "google_sql_database_instance" "main_db" {
+  count            = var.build_sql ? 1 : 0
+  name             = local.sql_instance_name
+  project          = var.my_project
+  database_version = "POSTGRES_13"
+  region           = var.region
 
-  provisioner "local-exec" {
-    command = <<-EOT
-      if gcloud compute resource-policies describe ${local.policy_instance_name} --region=${var.region} --project=${var.my_project} --impersonate-service-account=${local.build_account_email} > /dev/null 2>&1; then
-        echo "Resource policy ${local.policy_instance_name} already exists"
-      else
-        echo "Creating resource policy ${local.policy_instance_name}"
-        gcloud compute resource-policies create instance-schedule ${local.policy_instance_name} \
-          --region=${var.region} \
-          --vm-stop-schedule="${var.vm_stop_schedule}" \
-          --timezone=${local.timezone} \
-          --description="Office Hours for ${var.inst_postfix}" \
-          --project=${var.my_project} \
-          --impersonate-service-account=${local.build_account_email}
-      fi
-    EOT
+  settings {
+    tier              = "db-custom-2-8192"
+    availability_type = "REGIONAL"
+    disk_type         = "PD_SSD"
+    disk_size         = 10
+
+    backup_configuration {
+      enabled                        = true
+      start_time                     = "04:00"
+      point_in_time_recovery_enabled = true
+    }
+
+    maintenance_window {
+      day  = 7  # Sunday
+      hour = 4
+    }
+
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = "projects/${var.my_project}/global/networks/${var.default_network}"
+    }
+
+    database_flags {
+      name  = "cloudsql.iam_authentication"
+      value = "on"
+    }
+  }
+
+  encryption_key_name = local.kms_sql_key
+  deletion_protection = false
+
+  lifecycle {
+    ignore_changes = [
+      settings[0].disk_size
+    ]
   }
 }
 
 # ------------------------------------------------------------------------------
 # GCE Proxy VM Instance
+# Created AFTER SQL instance so it can use SQL private IP
+# Uses replace_triggered_by to force recreation when needed
 # ------------------------------------------------------------------------------
 resource "google_compute_instance" "proxy_vm" {
   count = var.build_vm ? 1 : 0
 
-  depends_on = [null_resource.delete_instance_before_create]
+  depends_on = [
+    google_sql_database_instance.main_db
+  ]
 
   project      = var.my_project
   zone         = local.zone
@@ -166,14 +199,16 @@ resource "google_compute_instance" "proxy_vm" {
   }
 
   allow_stopping_for_update = true
+  deletion_protection       = false
 
   lifecycle {
-    ignore_changes = [scheduling]
+    ignore_changes        = [scheduling]
+    replace_triggered_by  = [google_storage_bucket_object.startup_script[0].id]
   }
 }
 
 # ------------------------------------------------------------------------------
-# IAM Binding for VM
+# IAM Binding for VM - Allows compute service to stop/start VM
 # ------------------------------------------------------------------------------
 resource "google_compute_instance_iam_member" "vm_stopper" {
   count         = var.build_vm ? 1 : 0
@@ -185,67 +220,15 @@ resource "google_compute_instance_iam_member" "vm_stopper" {
 }
 
 # ------------------------------------------------------------------------------
-# Attach Resource Policy
+# Attach Resource Policy to VM
 # ------------------------------------------------------------------------------
-resource "null_resource" "add_vm_schedule" {
+resource "google_compute_instance_resource_policy_attachment" "vm_schedule_attachment" {
   count = var.build_vm ? 1 : 0
-  depends_on = [
-    google_compute_instance.proxy_vm,
-    google_compute_instance_iam_member.vm_stopper,
-    null_resource.check_policy_exists
-  ]
 
-  provisioner "local-exec" {
-    command = "gcloud compute instances add-resource-policies ${google_compute_instance.proxy_vm[0].name} --resource-policies=${local.policy_instance_name} --zone=${local.zone} --project=${var.my_project} --impersonate-service-account=${local.build_account_email} || true"
-  }
-}
-
-# ------------------------------------------------------------------------------
-# Cloud SQL Instance - Native Terraform Resource
-# ------------------------------------------------------------------------------
-resource "google_sql_database_instance" "main_db" {
-  count            = var.build_sql ? 1 : 0
-  name             = local.sql_instance_name
-  project          = var.my_project
-  database_version = "POSTGRES_13"
-  region           = var.region
-
-  settings {
-    tier              = "db-custom-2-8192"
-    availability_type = "REGIONAL"
-    disk_type         = "PD_SSD"
-    disk_size         = 10
-
-    backup_configuration {
-      enabled    = true
-      start_time = "04:00"
-      binary_log_enabled = true
-    }
-
-    maintenance_window {
-      day  = 7  # Sunday
-      hour = 4
-    }
-
-    ip_configuration {
-      ipv4_enabled    = false
-      private_network = "projects/${var.my_project}/global/networks/${var.default_network}"
-    }
-
-    database_flags {
-      name  = "cloudsql.iam_authentication"
-      value = "on"
-    }
-  }
-
-  encryption_key_name = local.kms_sql_key
-
-  lifecycle {
-    prevent_destroy = true
-    ignore_changes = [
-      settings[0].disk_size
-    ]
-  }
+  project         = var.my_project
+  zone            = local.zone
+  instance        = google_compute_instance.proxy_vm[0].name
+  resource_policy = google_compute_resource_policy.vm_schedule[0].name
 }
 
 # ------------------------------------------------------------------------------
