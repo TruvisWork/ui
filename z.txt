@@ -45,7 +45,7 @@ data "google_compute_address" "static_ip" {
 }
 
 # ------------------------------------------------------------------------------
-# GCS Resources
+# GCS Resources - The startup script for the VM
 # ------------------------------------------------------------------------------
 resource "google_storage_bucket_object" "startup_script" {
   count  = var.build_vm ? 1 : 0
@@ -55,13 +55,13 @@ resource "google_storage_bucket_object" "startup_script" {
 }
 
 # ------------------------------------------------------------------------------
-# NATIVE Resource Policy (Replaces the check_policy_exists script)
+# Resource Policy for VM Scheduling
 # ------------------------------------------------------------------------------
-resource "google_compute_resource_policy" "office_hours" {
-  count   = var.build_vm ? 1 : 0
-  name    = local.policy_instance_name
-  project = var.my_project
-  region  = var.region
+resource "google_compute_resource_policy" "vm_schedule" {
+  count       = var.build_vm ? 1 : 0
+  name        = local.policy_instance_name
+  region      = var.region
+  project     = var.my_project
   description = "Office Hours for ${var.inst_postfix}"
 
   instance_schedule_policy {
@@ -71,7 +71,7 @@ resource "google_compute_resource_policy" "office_hours" {
 }
 
 # ------------------------------------------------------------------------------
-# NATIVE Cloud SQL Instance (Replaces the check_sql_exists script)
+# Cloud SQL Instance - Native Terraform Resource
 # ------------------------------------------------------------------------------
 resource "google_sql_database_instance" "main_db" {
   count               = var.build_sql ? 1 : 0
@@ -79,16 +79,17 @@ resource "google_sql_database_instance" "main_db" {
   project             = var.my_project
   database_version    = "POSTGRES_13"
   region              = var.region
-  deletion_protection = false
+  deletion_protection = false # Set to true for production environments
 
   settings {
-    tier              = "db-custom-2-8192"
-    availability_type = "REGIONAL"
-    disk_type         = "PD_SSD"
-    disk_size         = 10
+    tier                 = "db-custom-2-8192"
+    availability_type    = "REGIONAL"
+    disk_type            = "PD_SSD"
+    disk_size            = 10
     backup_configuration {
-      enabled    = true
-      start_time = "04:00"
+      enabled                      = true
+      start_time                   = "04:00"
+      point_in_time_recovery_enabled = true
     }
     ip_configuration {
       ipv4_enabled    = false
@@ -103,7 +104,7 @@ resource "google_sql_database_instance" "main_db" {
 }
 
 # ------------------------------------------------------------------------------
-# GCE Proxy VM Instance (Replaces the delete_instance_before_create script)
+# GCE Proxy VM Instance
 # ------------------------------------------------------------------------------
 resource "google_compute_instance" "proxy_vm" {
   count        = var.build_vm ? 1 : 0
@@ -112,7 +113,6 @@ resource "google_compute_instance" "proxy_vm" {
   name         = local.vm_instance_name
   machine_type = var.machine_type
   tags         = var.network_tags
-  deletion_protection = false # Set to 'true' for production
 
   boot_disk {
     initialize_params {
@@ -127,7 +127,6 @@ resource "google_compute_instance" "proxy_vm" {
     subnetwork = local.host_subnet_uri
     network_ip = data.google_compute_address.static_ip.address
   }
-
   network_interface {
     subnetwork = local.def_subnet_uri
   }
@@ -137,39 +136,104 @@ resource "google_compute_instance" "proxy_vm" {
     scopes = var.vm_scopes
   }
 
-  # NATIVE way to attach the resource policy (Replaces the add_vm_schedule script)
   scheduling {
-    resource_policies = [google_compute_resource_policy.office_hours[0].self_link]
+    resource_policies = [google_compute_resource_policy.vm_schedule[0].self_link]
   }
 
   metadata = {
-    startup-script-url     = "gs://${local.startup_script_bucket}/${google_storage_bucket_object.startup_script[0].name}"
-    cloudsql_private_ip    = var.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : ""
+    startup-script-url  = "gs://${local.startup_script_bucket}/${google_storage_bucket_object.startup_script[0].name}"
+    cloudsql_private_ip = var.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : ""
   }
 
   allow_stopping_for_update = true
+  deletion_protection       = false
+
+  lifecycle {
+    # This block replaces the 'delete_instance_before_create' script.
+    # It will destroy and re-create the VM if the startup script GCS object changes.
+    replace_triggered_by = [google_storage_bucket_object.startup_script[0]]
+  }
 }
 
-# --- The rest of your resources remain the same as they were already correct ---
+# ------------------------------------------------------------------------------
+# IAM Binding for VM
+# ------------------------------------------------------------------------------
+resource "google_compute_instance_iam_member" "vm_stopper" {
+  count         = var.build_vm ? 1 : 0
+  project       = var.my_project
+  zone          = local.zone
+  instance_name = google_compute_instance.proxy_vm[0].name
+  role          = "organizations/103829057055/roles/cr.instancestopStart"
+  member        = "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com"
+}
 
 # ------------------------------------------------------------------------------
-# Cloud SQL Database & Users
+# Cloud SQL Database
 # ------------------------------------------------------------------------------
 resource "google_sql_database" "database" {
   count    = var.build_sql ? 1 : 0
   instance = google_sql_database_instance.main_db[0].name
   name     = var.db_name
+  project  = var.my_project
 }
 
+# ------------------------------------------------------------------------------
+# Cloud SQL User
+# ------------------------------------------------------------------------------
 resource "google_sql_user" "postgres_admin" {
   count    = var.build_sql ? 1 : 0
   instance = google_sql_database_instance.main_db[0].name
   name     = "postgres"
   password = var.postgres_password
+  project  = var.my_project
 }
-# ... (iam_users and iam_service_accounts resources would go here, unchanged) ...
+
+# ------------------------------------------------------------------------------
+# IAM Users for Cloud SQL
+# ------------------------------------------------------------------------------
+resource "google_sql_user" "iam_users" {
+  for_each = var.build_sql ? toset(var.iam_user_emails) : []
+  project  = var.my_project
+  instance = google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_USER"
+}
+
+# ------------------------------------------------------------------------------
+# IAM Service Accounts for Cloud SQL
+# ------------------------------------------------------------------------------
+resource "google_sql_user" "iam_service_accounts" {
+  for_each = var.build_sql ? toset(local.iam_service_account_emails) : []
+  project  = var.my_project
+  instance = google_sql_database_instance.main_db[0].name
+  name     = each.key
+  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
+}
 
 # ------------------------------------------------------------------------------
 # Outputs
 # ------------------------------------------------------------------------------
-# ... (outputs would go here, unchanged) ...
+output "environment" {
+  description = "Current environment"
+  value       = local.env
+}
+
+output "proxy_vm_primary_ip" {
+  description = "The primary internal IP address of the proxy VM."
+  value       = var.build_vm ? google_compute_instance.proxy_vm[0].network_interface[0].network_ip : "VM not built."
+}
+
+output "proxy_vm_secondary_ip" {
+  description = "The secondary internal IP address of the proxy VM."
+  value       = var.build_vm ? google_compute_instance.proxy_vm[0].network_interface[1].network_ip : "VM not built."
+}
+
+output "cloudsql_instance_connection_name" {
+  description = "The connection name for the Cloud SQL instance."
+  value       = var.build_sql ? google_sql_database_instance.main_db[0].connection_name : "SQL not built."
+}
+
+output "cloudsql_private_ip" {
+  description = "The private IP of the Cloud SQL instance."
+  value       = var.build_sql ? google_sql_database_instance.main_db[0].private_ip_address : "SQL not built."
+}
