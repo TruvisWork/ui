@@ -1,0 +1,115 @@
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = ">= 4.0"
+    }
+  }
+}
+
+provider "google" {
+  project = var.gcp_project_id
+  region  = var.region
+
+  impersonate_service_account = "terraform-jenkins-usr@${var.gcp_project_id}.iam.gserviceaccount.com"
+}
+
+# --- Data Sources ---
+data "google_project" "project" {}
+
+data "google_compute_address" "static_ip" {
+  name = var.ip_static_name
+}
+
+data "google_secret_manager_secret_version" "postgres_password" {
+  secret = "postgres-admin-password" # Assumes a secret with this name exists in each project
+}
+
+# --- Resource Policy for VM Office Hours ---
+resource "google_compute_resource_policy" "office_hours" {
+  name    = "office-hours-for-${var.vm_instance_name}"
+  project = var.gcp_project_id
+  region  = var.region
+
+  instance_schedule_policy {
+    vm_stop_schedule = "0 19 * * *"
+    time_zone        = "Asia/Hong_Kong"
+  }
+}
+
+# --- GCE Proxy VM Instance ---
+resource "google_compute_instance" "proxy_vm" {
+  project      = var.gcp_project_id
+  zone         = "${var.region}-a"
+  name         = var.vm_instance_name
+  machine_type = "n2-standard-8"
+  tags         = var.network_tags
+
+  boot_disk {
+    initialize_params {
+      image = "projects/hsbc-6320774-distcompute-prod/global/images/family/gce-rhel8-ver2-stage2"
+      size  = 300
+      type  = "pd-standard"
+    }
+    kms_key_self_link = "projects/hsbc-6320774-kms/locations/${var.region}/keyRings/computeEngine/cryptoKeys/computeEngine"
+  }
+
+  network_interface {
+    subnetwork = "projects/${var.host_project}/regions/${var.region}/subnetworks/${var.host_project}-internal-vpc1"
+    network_ip = data.google_compute_address.static_ip.address
+  }
+
+  network_interface {
+    subnetwork = "projects/${var.gcp_project_id}/regions/${var.region}/subnetworks/hsbc-default-network"
+  }
+
+  service_account {
+    email  = "query-genie@${var.gcp_project_id}.iam.gserviceaccount.com"
+    scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
+
+  scheduling {
+    resource_policies = [google_compute_resource_policy.office_hours.self_link]
+  }
+
+  allow_stopping_for_update = true
+}
+
+# --- Cloud SQL Instance ---
+resource "google_sql_database_instance" "main_db" {
+  name                = var.cloudsql_instance_name
+  project             = var.gcp_project_id
+  region              = var.region
+  database_version    = "POSTGRES_13"
+  deletion_protection = terraform.workspace == "prod" # Enable deletion protection only for prod workspace
+
+  settings {
+    tier              = "db-custom-2-8192"
+    availability_type = "REGIONAL"
+    disk_type         = "PD_SSD"
+    disk_size         = 10
+    ip_configuration {
+      ipv4_enabled    = false
+      private_network = "projects/${var.gcp_project_id}/global/networks/hsbc-default-network"
+    }
+    backup_configuration {
+      enabled            = true
+      binary_log_enabled = true
+    }
+  }
+
+  disk_encryption_key_name = "projects/hsbc-6320774-kms/locations/${var.region}/keyRings/sql/cryptoKeys/sqlSharedKey"
+}
+
+# --- Cloud SQL Database ---
+resource "google_sql_database" "database" {
+  instance = google_sql_database_instance.main_db.name
+  name     = "recommendations"
+}
+
+# --- Cloud SQL Postgres Admin User ---
+resource "google_sql_user" "postgres_admin" {
+  instance = google_sql_database_instance.main_db.name
+  name     = "postgres"
+  password = data.google_secret_manager_secret_version.postgres_password.secret_data
+}
