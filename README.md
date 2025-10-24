@@ -25,45 +25,22 @@ Currently, two official plugins are available:
 - [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
 
 
-CREATE TABLE base_query_info_core (
-version_id INTEGER NOT NULL,
-s_id BIGINT,
-log_id BIGINT,
-statement_type TEXT,
-database TEXT,
-schema TEXT,
-query TEXT,
-target_database TEXT,
-target_schema TEXT,
-target_entity_name TEXT,
-source_database TEXT,
-relationship_type TEXT
-) PARTITION BY LIST (version_id);
+locals {
+  vm_metadata = {
+    region                   = var.region
+    zonePostfix              = var.zone_postfix
+    project                  = var.project_id
+    yumpackages              = var.yumpackages
+    env                      = var.env
+    nexus3                   = var.nexus3
+    gbmtNexus                = var.gbmtNexus
+    nexus302                 = var.nexus302
+    nodenpm                  = var.nodenpm
+    bucketUriStartup         = var.bucketUriStartup
+    cloudsql_instance_name   = var.sql_instance_name
+    cloudsql_connection_string = "${var.project_id}:${var.region}:${var.sql_instance_name}"
+    cloudsql_private_ip      = var.cloudsql_private_ip
+    isGmiTest                = var.isGmiTest
+  }
+}
 
-
-1. IAM Member for VM Stopper
-bash
-terraform import 'google_compute_instance_iam_member.vm_stopper[0]' \
-hsbc-12010598-fdrasp-dev/asia-east2-a/query-genie-reco-dev-9999-test organizations/1038829057055/roles/cr.instanceStopStart serviceAccount:service-761857469903@compute-system.iam.gserviceaccount.com
-Format: <project>/<zone>/<instance_name> <role> <member>
-
-2. SQL Database (recommendations)
-bash
-terraform import 'google_sql_database.database[0]' \
-hsbc-12010598-fdrasp-dev/qg-reco-engine-dev/recommendations
-Format: <project>/<instance_name>/<database_name>
-
-3. SQL User - Service Account query-genie@hsbc-12010598-fdrasp-dev.iam.gserviceaccount.com
-bash
-terraform import 'google_sql_user.iam_accounts["query-genie@hsbc-12010598-fdrasp-dev.iam.gserviceaccount.com_true"]' \
-hsbc-12010598-fdrasp-dev/qg-reco-engine-dev/query-genie@hsbc-12010598-fdrasp-dev.iam
-Format: <project>/<instance_name>/<user_name>
-
-4. SQL User - Service Account terraform-jenkins-usr@hsbc-12010598-fdrasp-dev.iam.gserviceaccount.com
-bash
-terraform import 'google_sql_user.iam_accounts["terraform-jenkins-usr@hsbc-12010598-fdrasp-dev.iam.gserviceaccount.com_true"]' \
-hsbc-12010598-fdrasp-dev/qg-reco-engine-dev/terraform-jenkins-usr@hsbc-12010598-fdrasp-dev.iam
-5. SQL User - postgres_admin
-bash
-terraform import 'google_sql_user.postgres_admin[0]' \
-hsbc-12010598-fdrasp-dev/qg-reco-engine-dev/postgres_admin
