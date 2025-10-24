@@ -1,0 +1,49 @@
+variable "my_project" {
+  description = "GCP project ID"
+  type        = string
+}
+
+variable "zone" {
+  description = "Zone of the VM and source disk"
+  type        = string
+}
+
+variable "vm_query_genie_final" {
+  description = "Name of the source disk/VM for the image"
+  type        = string
+}
+
+variable "image_family_stage" {
+  description = "Image family name for stage 3"
+  type        = string
+}
+
+variable "build_account" {
+  description = "Service account email to impersonate"
+  type        = string
+  default     = null
+}
+
+locals {
+  image_name = "${var.image_family_stage}-v${formatdate("YYYYMMDD-HHmmss", timestamp())}"
+}
+
+provider "google" {
+  project = var.my_project
+  impersonate_service_account = var.build_account != null ? var.build_account : null
+}
+
+resource "google_compute_image" "stage3" {
+  name         = local.image_name
+  family       = var.image_family_stage
+  project      = var.my_project
+  source_disk  = var.vm_query_genie_final
+  zone         = var.zone
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+output "created_image" {
+  value = google_compute_image.stage3.self_link
+}
