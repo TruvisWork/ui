@@ -3,15 +3,16 @@ import './DataCatalogEditor.css';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import SaveIcon from '@mui/icons-material/Save';
-import ColumnMetadata from './ColumnMetadata';
+import ColumnMetadata from './ColumnMetaData';
 import { Autocomplete, TextField as MuiTextField, CircularProgress, Alert } from '@mui/material';
 
 // API configuration constants
-const API_BASE_URL = 'http://10.91.12.22:8000';
+const API_BASE_URL = 'http://localhost:8000';
 
 // Internal API request handler
 const makeApiRequest = async (endpoint, options = {}) => {
   const config = {
+    credentials: 'include',
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -68,18 +69,21 @@ const DataCatalogEditor = () => {
   const [auditHistory, setAuditHistory] = useState([]);
   const [allColumns, setAllColumns] = useState([]);
 
-  // Remove sessionStorage and credentials: 'include' usage in API requests
-  const API_CONFIG = {
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  };
+  // Get market from session storage
+  const selectedMarket = sessionStorage.getItem('selectedMarket');
 
   // Fetch table options on component mount
   useEffect(() => {
     const fetchTableOptions = async () => {
+      if (!selectedMarket) return;
+      
       try {
-        const response = await makeApiRequest('/get-tables', API_CONFIG);
+        const response = await makeApiRequest('/get-tables', {
+          method: 'POST',
+          body: JSON.stringify({
+            market: selectedMarket
+          })
+        });
 
         if (!response) return; // Authentication failed, already handled
 
@@ -97,12 +101,12 @@ const DataCatalogEditor = () => {
     };
     
     fetchTableOptions();
-  }, []);
+  }, [selectedMarket]);
 
   // Fetch Meta data when table changes
   useEffect(() => {
     const fetchTableMetaData = async () => {
-      if (!selectedTable) {
+      if (!selectedMarket || !selectedTable) {
         // Reset form when no table is selected
         setInitialData(null);
         setDescription('');
@@ -116,7 +120,15 @@ const DataCatalogEditor = () => {
       }
       
       try {
-        const response = await makeApiRequest('/get-table-metadata', API_CONFIG);
+        const response = await makeApiRequest('/get-table-metadata', {
+          method: 'POST',
+          body: JSON.stringify({
+            market: selectedMarket,
+            table_name: selectedTable
+          })
+        });
+
+        if (!response) return; // Authentication failed, already handled
 
         if (response.status === 404) {
           // Handle case where table metadata does not exist yet
@@ -153,7 +165,7 @@ const DataCatalogEditor = () => {
     };
     
     fetchTableMetaData();
-  }, [selectedTable]);
+  }, [selectedMarket, selectedTable]);
 
   // Effect to update form state when initialData changes
   useEffect(() => {
@@ -171,12 +183,15 @@ const DataCatalogEditor = () => {
   // Fetch audit history when table changes
   useEffect(() => {
     const fetchAuditHistory = async () => {
-      if (!selectedTable) {
+      if (!selectedMarket || !selectedTable) {
         setAuditHistory([]);
         return;
       }
       try {
-        const response = await makeApiRequest('/get-audit-table', API_CONFIG);
+        const response = await makeApiRequest('/get-audit-table', {
+          method: 'POST',
+          body: JSON.stringify({ market: selectedMarket, table_name: selectedTable }),
+        });
         if (!response || !response.ok) throw new Error(`HTTP error! status: ${response?.status}`);
         const data = await response.json();
         const formattedHistory = (data.result || []).map(item => ({
@@ -190,18 +205,24 @@ const DataCatalogEditor = () => {
       }
     };
     fetchAuditHistory();
-  }, [selectedTable]);
+  }, [selectedMarket, selectedTable]);
 
   // Fetch columns when table changes
   useEffect(() => {
     const fetchAllColumns = async () => {
-      if (!selectedTable) {
+      if (!selectedMarket || !selectedTable) {
         setAllColumns([]);
         return;
       };
       
       try {
-        const response = await makeApiRequest('/get-columns', API_CONFIG);
+        const response = await makeApiRequest('/get-columns', {
+          method: 'POST',
+          body: JSON.stringify({
+            market: selectedMarket,
+            table_name: selectedTable
+          })
+        });
 
         if (!response) return; // Authentication failed, already handled
 
@@ -218,7 +239,7 @@ const DataCatalogEditor = () => {
     };
     
     fetchAllColumns();
-  }, [selectedTable]);
+  }, [selectedMarket, selectedTable]);
 
   // Reset button handler
   const handleReset = () => {
@@ -263,7 +284,7 @@ const DataCatalogEditor = () => {
 
   // Fixed main save handler for table metadata
   const handleSave = async () => {
-    if (!selectedTable) {
+    if (!selectedTable || !selectedMarket) {
       setError('Please select a table before saving.');
       return;
     }
@@ -273,7 +294,7 @@ const DataCatalogEditor = () => {
     setSuccessMessage('');
     
     const payload = {
-      market: 'ALL',
+      market: selectedMarket,
       table_name: selectedTable,
       obj: {
         description: description,
@@ -290,7 +311,10 @@ const DataCatalogEditor = () => {
     };
   
     try {
-      const response = await makeApiRequest('/update-table', API_CONFIG);
+      const response = await makeApiRequest('/update-table', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
   
       if (!response || !response.ok) {
         const errData = response ? await response.json() : { detail: "Network error" };
@@ -309,7 +333,10 @@ const DataCatalogEditor = () => {
       setInitialData(savedData);
   
       // Refresh audit history after successful save
-      const auditResponse = await makeApiRequest('/get-audit-table', API_CONFIG);
+      const auditResponse = await makeApiRequest('/get-audit-table', {
+        method: 'POST',
+        body: JSON.stringify({ market: selectedMarket, table_name: selectedTable }),
+      });
       
       if (auditResponse && auditResponse.ok) {
         const auditData = await auditResponse.json();
