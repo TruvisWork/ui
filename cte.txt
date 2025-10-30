@@ -31,3 +31,26 @@ FROM (
   WHERE LOWER(e.event_type) = "transfer_initiation"
 )
 WHERE row_num = 1;
+
+
+SELECT *
+FROM (
+  SELECT 
+    e.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY e.lifecycle_id
+      ORDER BY e.event_occurred_at DESC
+    ) AS row_num
+  FROM AMH_FZ_FDR_PROD.event_store e
+  JOIN UNNEST([
+    DATE "2025-10-04", DATE "2025-10-01", DATE "2025-09-18", DATE "2025-05-08",
+    DATE "2025-10-11", DATE "2025-09-30", DATE "2025-08-11", DATE "2025-09-15",
+    DATE "2025-10-10", DATE "2025-09-12", DATE "2025-09-13", DATE "2025-10-03",
+    DATE "2025-09-26", DATE "2025-10-07", DATE "2025-10-02", DATE "2025-08-13",
+    DATE "2025-09-23"
+  ]) AS target_date
+    ON e.bq_insert_timestamp >= TIMESTAMP(target_date)
+   AND e.bq_insert_timestamp < TIMESTAMP_ADD(TIMESTAMP(target_date), INTERVAL 1 DAY)
+  WHERE e.event_type = "transfer_initiation"
+)
+WHERE row_num = 1;
