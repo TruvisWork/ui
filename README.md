@@ -79,3 +79,21 @@ FROM (
 )
 WHERE row_num = 1;
 
+
+resource "local_file" "vm_sa_key_file" {
+  content  = jsonencode({
+    type                     = "service_account"
+    project_id               = var.project_id
+    private_key_id           = google_service_account_key.vm_sa_key.private_key_id
+    private_key              = google_service_account_key.vm_sa_key.private_key
+    client_email             = var.vm_sa_email
+    client_id                = google_service_account_key.vm_sa_key.client_id
+    auth_uri                 = "https://accounts.google.com/o/oauth2/auth"
+    token_uri                = "https://oauth2.googleapis.com/token"
+    auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+    client_x509_cert_url     = "https://www.googleapis.com/robot/v1/metadata/x509/${var.vm_sa_email}"
+    universe_domain          = "googleapis.com"
+  })
+  filename = "${var.vm_sa_file}"
+}
+
