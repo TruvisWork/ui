@@ -1,0 +1,263 @@
+-- ============================================================
+-- OPTIMIZED PAYMENT_MART INSERT QUERY
+-- Optimizations:
+--   1. Eliminated SELECT *
+--   2. Partition-safe filters
+--   3. Early projection of only needed columns
+--   4. Replaced deep nesting with CTEs
+--   5. Improved join readability
+-- ============================================================
+
+INSERT INTO AMH_FZ_REPORT_MARTS_TABLES_DEV.Payment_Mart (
+    report_name,
+    create_timestamp,
+    action_on_alert_timestamp,
+    result_on_alert_timestamp,
+    entity,
+    portfolio,
+    channel,
+    class,
+    final_portfolio,
+    statemachineID,
+    final_state,
+    payment_source,
+    transaction_status,
+    sender_transaction_currency,
+    number_of_payment_customers,
+    sum_of_transaction_amount_usd,
+    sum_of_transaction_original_amount,
+    count_of_transactions,
+    count_of_alerts,
+    sum_of_transaction_amount_by_alerts,
+    number_of_alerted_customers,
+    sum_of_transaction_original_amount_by_alerts,
+    sum_of_transaction_amount_gbp,
+    sum_of_transaction_amount_gbp_by_alerts,
+    lob,
+    load_datetime
+)
+WITH
+-- ===================================================================
+-- 1️⃣ Base cm_event_arrival (non-alert)
+-- ===================================================================
+cm_event_arrival_base AS (
+  SELECT
+    id.identifier,
+    id.payload.schema.customer_portfolio_region AS entity,
+    id.payload.schema.customer_portfolio_country AS portfolio,
+    id.payload.schema.customer_portfolio_class AS class,
+    id.timestamp AS id_timestamp,
+    updatedTimestamp
+  FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival
+  WHERE updatedTimestamp >= '2025-09-22 00:00:00+00'
+    AND id.timestamp >= UNIX_MILLIS(TIMESTAMP('2025-09-22 00:00:00+00'))
+    AND id.timestamp < UNIX_MILLIS(TIMESTAMP('2025-10-06 16:00:00+00'))
+),
+-- ===================================================================
+-- 2️⃣ Alert arrivals
+-- ===================================================================
+cm_event_arrival_alert AS (
+  SELECT
+    id.identifier
+  FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival
+  WHERE alert = TRUE
+    AND updatedTimestamp >= '2025-09-22 00:00:00+00'
+    AND id.timestamp >= UNIX_MILLIS(TIMESTAMP('2025-09-22 00:00:00+00'))
+    AND id.timestamp < UNIX_MILLIS(TIMESTAMP('2025-10-06 16:00:00+00'))
+),
+-- ===================================================================
+-- 3️⃣ event_store (filtered)
+-- ===================================================================
+event_store_base AS (
+  SELECT
+    lifecycle_id,
+    customer_id,
+    sender_transaction_currency,
+    sender_transaction_amount_dbl,
+    payment_message_source,
+    segment_channel_type,
+    fdz_channel,
+    event_type,
+    entity_type,
+    payment_revision_code,
+    top_payee_payer,
+    customer_type,
+    customer_id_number,
+    source AS payment_source,
+    channel_type,
+    JSON_EXTRACT_SCALAR(outcomes_and_scores, "$.decision.outcomeDecision") AS decision
+  FROM AMH_FZ_FDR_DEV_SIT.event_store
+  WHERE bq_insert_timestamp >= '2025-09-22 00:00:00+00'
+    AND LOWER(event_type) IN ('transfer_initiation','feedback')
+    AND JSON_EXTRACT_SCALAR(outcomes_and_scores, "$.decision.outcomeDecision") IN ('approve','decline','review')
+),
+-- ===================================================================
+-- 4️⃣ cm_event_state_updates (non-status)
+-- ===================================================================
+cm_event_state_updates AS (
+  SELECT
+    identifier,
+    state.id AS state_id,
+    statemachineid,
+    updatedAt
+  FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates
+  LEFT JOIN UNNEST(ids)
+  WHERE updatedTimestamp >= '2025-09-22 00:00:00+00'
+    AND LOWER(state.id) NOT IN ('closed')
+    AND LOWER(channelId) IN ('transfers')
+    AND LOWER(statemachineid) NOT IN (
+      'breach_status', 'decision', 'status_digital_activity',
+      'status_transfers', 'transfer_status', 'operational_status'
+    )
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY identifier ORDER BY updatedAt DESC) = 1
+),
+-- ===================================================================
+-- 5️⃣ cm_event_state_updates_status
+-- ===================================================================
+cm_event_state_updates_status AS (
+  SELECT
+    identifier,
+    state.id AS final_state
+  FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates
+  LEFT JOIN UNNEST(ids)
+  WHERE LOWER(stateMachineId) = 'status'
+    AND updatedTimestamp >= '2025-09-22 00:00:00+00'
+    AND TIMESTAMP_MILLIS(updatedAt) < TIMESTAMP('2025-10-06 16:00:00+00')
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY identifier ORDER BY updatedAt DESC) = 1
+),
+-- ===================================================================
+-- 6️⃣ cm_event_assignee_update
+-- ===================================================================
+cm_event_assignee_update AS (
+  SELECT
+    identifier,
+    updatedAt
+  FROM AMH_FZ_FDR_DEV_SIT.cm_event_assignee_update
+  LEFT JOIN UNNEST(ids)
+  WHERE updatedTimestamp >= '2025-09-22 00:00:00+00'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY identifier ORDER BY updatedAt DESC) = 1
+),
+-- ===================================================================
+-- 7️⃣ cm_event_queue_changed
+-- ===================================================================
+cm_event_queue_changed AS (
+  SELECT
+    identifier,
+    cm_event_queue_changed.timestamp AS timestamp
+  FROM AMH_FZ_FDR_DEV_SIT.cm_event_queue_changed
+  LEFT JOIN UNNEST(ids)
+  WHERE updatedTimestamp >= '2025-09-22 00:00:00+00'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY identifier ORDER BY timestamp DESC) = 1
+)
+-- ===================================================================
+-- 8️⃣ Final Aggregation and Insert
+-- ===================================================================
+SELECT
+  'Payment MI' AS report_name,
+  TIMESTAMP_TRUNC(TIMESTAMP_ADD(TIMESTAMP_MILLIS(a.id_timestamp), INTERVAL 8 HOUR), DAY) AS create_timestamp,
+  NULLIF(
+    TIMESTAMP_TRUNC(
+      GREATEST(
+        COALESCE(TIMESTAMP_MILLIS(ass.updatedAt), '1970-01-01 00:00:00 UTC'),
+        COALESCE(TIMESTAMP_MILLIS(state.updatedAt), '1970-01-01 00:00:00 UTC'),
+        COALESCE(TIMESTAMP_MILLIS(a.id_timestamp), '1970-01-01 00:00:00 UTC'),
+        COALESCE(TIMESTAMP(q.timestamp), '1970-01-01 00:00:00 UTC')
+      ), HOUR
+    ),
+    '1970-01-01 00:00:00'
+  ) AS action_on_alert_timestamp,
+  CASE
+    WHEN LOWER(state.state_id) IN ('genuine', 'fraud')
+      THEN TIMESTAMP_TRUNC(TIMESTAMP_MILLIS(state.updatedAt), HOUR)
+  END AS result_on_alert_timestamp,
+  a.entity,
+  a.portfolio,
+  CASE
+    WHEN LOWER(e.channel_type) = 'c' THEN 'Payment Card at Card Reader Terminal (including online purchase and ATM)'
+    WHEN LOWER(e.channel_type) = 'd' THEN 'Payment Card or Number with Online Details and Device Fingerprint Information'
+    WHEN LOWER(e.channel_type) = 'e' THEN 'Payment Card or Number with Online Details'
+    WHEN LOWER(e.channel_type) = 'o' THEN 'Online Banking (internet, mobile phone)'
+    WHEN LOWER(e.channel_type) = 'w' THEN 'Online Banking with device fingerprint information'
+    WHEN LOWER(e.channel_type) = 'p' THEN 'Phone Banking'
+    WHEN LOWER(e.channel_type) = 'h' THEN 'Self Bank Branch'
+    WHEN LOWER(e.channel_type) = 'm' THEN 'Correspondence(for non-mon and check deposit)'
+    WHEN LOWER(e.channel_type) = 'b' THEN 'Bank Processing(include bank initiated non-mon maintenance, ACH debit, EFT processing)'
+    WHEN LOWER(e.channel_type) = 'f' THEN 'Financial Consultant'
+    WHEN LOWER(e.channel_type) = 'r' THEN 'Other'
+    WHEN LOWER(e.channel_type) = 's' THEN 'Merchant - Acquirer Processing with Device Fingerprint'
+    WHEN LOWER(e.channel_type) = 't' THEN 'Merchant - Acquirer Processing'
+    WHEN LOWER(e.channel_type) = 'u' THEN 'Unknown'
+    WHEN LOWER(e.channel_type) = 'n' THEN 'NA'
+    ELSE e.channel_type
+  END AS channel,
+  a.class,
+  CASE
+    WHEN LOWER(a.portfolio) = 'cd' AND LOWER(a.class)='pers' THEN 'CIIOM WPB'
+    WHEN LOWER(a.portfolio) = 'cd' AND LOWER(a.class)='buss' THEN 'CIIOM CMB'
+    WHEN LOWER(a.portfolio) = 'ms' AND LOWER(a.class)='pers' THEN 'M&S WPB'
+    WHEN LOWER(a.portfolio) = 'fd' AND LOWER(a.class)='pers' THEN 'First Direct WPB'
+    WHEN LOWER(a.portfolio) = 'uk' AND LOWER(a.class)='pers' THEN 'Red Brand WPB'
+    WHEN LOWER(a.portfolio) = 'uk' AND LOWER(a.class)='buss' THEN 'Red Brand CMB'
+    WHEN LOWER(a.portfolio) = 'uk' AND LOWER(a.class)='priv' THEN 'Red Brand GPB'
+  END AS final_portfolio,
+  state.statemachineid AS statemachineID,
+  status.final_state AS final_state,
+  e.payment_source,
+  CASE
+    WHEN e.decision = 'approve' THEN 'approved'
+    WHEN e.decision = 'review' THEN 'review'
+    WHEN e.decision = 'decline' THEN 'declined'
+  END AS transaction_status,
+  e.sender_transaction_currency,
+  COUNT(DISTINCT e.customer_id) AS number_of_payment_customers,
+  SUM(e.sender_transaction_amount_dbl) AS sum_of_transaction_amount_usd,
+  SUM(CAST(e.sender_transaction_amount_dbl AS NUMERIC) * 100) AS sum_of_transaction_original_amount,
+  COUNT(DISTINCT a.identifier) AS count_of_transactions,
+  COUNT(DISTINCT alert.identifier) AS count_of_alerts,
+  SUM(e.sender_transaction_amount_dbl) AS sum_of_transaction_amount_by_alerts,
+  COUNT(DISTINCT alert.identifier) AS number_of_alerted_customers,
+  SUM(CAST(e.sender_transaction_amount_dbl AS NUMERIC) * 100) AS sum_of_transaction_original_amount_by_alerts,
+  SUM(e.sender_transaction_amount_dbl) AS sum_of_transaction_amount_gbp,
+  SUM(e.sender_transaction_amount_dbl) AS sum_of_transaction_amount_gbp_by_alerts,
+  CASE
+    WHEN (LOWER(e.payment_message_source) IN ('hk_gpb_mob','hk_gpb_web')
+          AND LOWER(e.segment_channel_type)='w'
+          AND LOWER(e.fdz_channel)='transfers'
+          AND LOWER(e.event_type)='transfer_initiation'
+          AND (LOWER(e.entity_type)!='b' OR e.entity_type IS NULL)
+          AND LOWER(e.payment_revision_code)='o'
+          AND LOWER(e.top_payee_payer) IN ('e','b','n','d'))
+      OR (LOWER(e.channel_type)='l' AND LOWER(e.event_type)='bt')
+      THEN 'GPB'
+    WHEN LOWER(COALESCE(e.customer_type, e.customer_type))='b'
+         AND LOWER(SUBSTR(COALESCE(e.customer_id_number,e.customer_id_number),1,2)) NOT IN ('xw','xk','xc')
+      THEN 'WSB'
+    WHEN (LOWER(COALESCE(e.customer_type,e.customer_type))='i'
+         OR (LOWER(COALESCE(e.customer_type,e.customer_type))='b'
+         AND LOWER(SUBSTR(COALESCE(e.customer_id_number,e.customer_id_number),1,2)) IN ('xw','xk','xc')))
+      THEN 'WPB'
+  END AS lob,
+  TIMESTAMP('2025-10-06 16:00:00+00') AS load_datetime
+FROM cm_event_arrival_base a
+LEFT JOIN event_store_base e ON a.identifier = e.lifecycle_id
+LEFT JOIN cm_event_arrival_alert alert ON a.identifier = alert.identifier
+LEFT JOIN cm_event_state_updates state ON a.identifier = state.identifier
+LEFT JOIN cm_event_state_updates_status status ON a.identifier = status.identifier
+LEFT JOIN cm_event_assignee_update ass ON a.identifier = ass.identifier
+LEFT JOIN cm_event_queue_changed q ON a.identifier = q.identifier
+WHERE LOWER(a.id.payload.schema.event_type) IN ('transfer_initiation','feedback')
+GROUP BY
+  create_timestamp,
+  action_on_alert_timestamp,
+  result_on_alert_timestamp,
+  entity,
+  portfolio,
+  channel,
+  lob,
+  class,
+  final_portfolio,
+  statemachineID,
+  final_state,
+  payment_source,
+  transaction_status,
+  sender_transaction_currency;
