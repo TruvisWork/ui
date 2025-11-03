@@ -1,3 +1,46 @@
+SELECT a.*
+FROM test a
+LEFT JOIN optimised b
+USING (
+  report_name, create_timestamp, entity, portfolio, channel, class,
+  final_portfolio, statemachineID, final_state, payment_source,
+  transaction_status, sender_transaction_currency, lob
+)
+WHERE b.report_name IS NULL;
+
+
+
+SELECT b.*
+FROM optimised b
+LEFT JOIN test a
+USING (
+  report_name, create_timestamp, entity, portfolio, channel, class,
+  final_portfolio, statemachineID, final_state, payment_source,
+  transaction_status, sender_transaction_currency, lob
+)
+WHERE a.report_name IS NULL;
+
+
+SELECT
+  a.report_name,
+  a.create_timestamp,
+  CASE WHEN a.action_on_alert_timestamp != b.action_on_alert_timestamp THEN 'action_on_alert_timestamp' END AS diff_field,
+  CASE WHEN a.result_on_alert_timestamp != b.result_on_alert_timestamp THEN 'result_on_alert_timestamp' END AS diff_field_2,
+  CASE WHEN a.channel != b.channel THEN 'channel' END AS diff_field_3,
+  CASE WHEN a.final_state != b.final_state THEN 'final_state' END AS diff_field_4,
+  CASE WHEN a.transaction_status != b.transaction_status THEN 'transaction_status' END AS diff_field_5
+FROM test a
+INNER JOIN optimised b
+USING (
+  report_name, create_timestamp, entity, portfolio, channel, class,
+  final_portfolio, statemachineID, final_state, payment_source,
+  transaction_status, sender_transaction_currency, lob
+)
+WHERE TO_JSON_STRING(a) != TO_JSON_STRING(b)
+LIMIT 100;
+
+===============================
+
 SELECT
   COALESCE(a.report_name, b.report_name) AS report_name,
   COALESCE(a.create_timestamp, b.create_timestamp) AS create_timestamp,
