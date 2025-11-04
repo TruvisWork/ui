@@ -1,3 +1,61 @@
+-- 🔍 Compare contents of test vs optimised table in both directions
+WITH
+-- Step 1: Compute a hash for each row in both tables
+test_hash AS (
+  SELECT
+    TO_HEX(MD5(TO_JSON_STRING(t))) AS row_hash
+  FROM test AS t
+),
+
+optimised_hash AS (
+  SELECT
+    TO_HEX(MD5(TO_JSON_STRING(o))) AS row_hash
+  FROM optimised AS o
+),
+
+-- Step 2: Rows present in test but missing from optimised
+missing_in_optimised AS (
+  SELECT row_hash FROM test_hash
+  EXCEPT DISTINCT
+  SELECT row_hash FROM optimised_hash
+),
+
+-- Step 3: Rows present in optimised but missing from test
+extra_in_optimised AS (
+  SELECT row_hash FROM optimised_hash
+  EXCEPT DISTINCT
+  SELECT row_hash FROM test_hash
+),
+
+-- Step 4: Summaries
+summary AS (
+  SELECT
+    (SELECT COUNT(*) FROM test_hash) AS test_rows,
+    (SELECT COUNT(*) FROM optimised_hash) AS optimised_rows,
+    (SELECT COUNT(*) FROM missing_in_optimised) AS missing_count,
+    (SELECT COUNT(*) FROM extra_in_optimised) AS extra_count
+)
+
+-- Step 5: Final comparison result
+SELECT
+  test_rows,
+  optimised_rows,
+  missing_count,
+  extra_count,
+  CASE
+    WHEN test_rows = optimised_rows
+         AND missing_count = 0
+         AND extra_count = 0
+      THEN '✅ MATCH — Both tables contain identical records.'
+    WHEN missing_count > 0 AND extra_count = 0
+      THEN '❌ MISMATCH — Some rows are missing in optimised.'
+    WHEN extra_count > 0 AND missing_count = 0
+      THEN '❌ MISMATCH — Some rows are extra in optimised.'
+    WHEN extra_count > 0 AND missing_count > 0
+      THEN '❌ MISMATCH — Differences exist in both directions.'
+  END AS result
+FROM summary;
+==========================================================================
 SELECT a.*
 FROM test a
 LEFT JOIN optimised b
