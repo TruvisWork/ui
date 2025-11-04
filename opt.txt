@@ -10,18 +10,20 @@ INSERT INTO AMH_FZ_REPORT_MARTS_TABLES_DEV.Payment_Mart
   sum_of_transaction_amount_gbp_by_alerts, lob, load_datetime
 )
 
--- 🧱 1. Base Event Arrival (deduped, column-pruned)
+-- 🧱 1. Base Event Arrival - EARLY CHANNEL FILTER (Major Scan Reduction)
 WITH base_arrival AS (
   SELECT
-    id,
+    id.identifier,
+    id.timestamp,
+    id.payload.schema.customer_portfolio_region AS entity,
+    id.payload.schema.customer_portfolio_country AS portfolio,
+    id.payload.schema.customer_portfolio_class AS class,
     timestamp,
-    updatedTimestamp,
     alert
   FROM (
     SELECT
       id,
       timestamp,
-      updatedTimestamp,
       alert,
       ROW_NUMBER() OVER (
         PARTITION BY id.identifier
@@ -29,15 +31,19 @@ WITH base_arrival AS (
       ) AS rn
     FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival
     WHERE
-      updatedTimestamp >= '2025-09-22 00:00:00+00'
+      LOWER(id.channelId) = 'transfers'  -- ⚡ EARLY FILTER - Massive scan reduction
+      AND updatedTimestamp >= '2025-09-22 00:00:00+00'
       AND TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-09-22 00:00:00+00')
       AND TIMESTAMP_MILLIS(id.timestamp) < TIMESTAMP('2025-10-06 16:00:00+00')
+      -- Partition filter if table is partitioned by date
+      AND DATE(updatedTimestamp) >= '2025-09-22'
+      AND DATE(updatedTimestamp) <= '2025-10-06'
   )
   WHERE rn = 1
 )
 
--- 🧱 2. Event Store (deduped, column-pruned)
-, base_event_store AS (
+-- 🧱 2. Single Event Store Scan - Consolidated for all uses
+, base_event_store_full AS (
   SELECT
     lifecycle_id,
     event_type,
@@ -57,26 +63,56 @@ WITH base_arrival AS (
     channel_name,
     sender_transaction_type,
     outcomes_and_scores,
-    bq_insert_timestamp
+    rules_triggered,
+    event_occurred_at
+  FROM AMH_FZ_FDR_DEV_SIT.event_store
+  WHERE
+    LOWER(event_type) IN ('transfer_initiation', 'feedback')
+    AND bq_insert_timestamp >= '2025-09-22 00:00:00+00'
+    -- Partition filter if table is partitioned
+    AND DATE(bq_insert_timestamp) >= '2025-09-22'
+    AND DATE(bq_insert_timestamp) <= '2025-10-06'
+)
+
+-- 🧱 3. Event Store Main (with decision filter)
+, base_event_store AS (
+  SELECT
+    lifecycle_id,
+    event_type,
+    channel_type,
+    source,
+    sender_transaction_currency,
+    sender_transaction_amount_dbl,
+    customer_id,
+    customer_type,
+    customer_id_number,
+    payment_message_source,
+    segment_channel_type,
+    fdz_channel,
+    entity_type,
+    payment_revision_code,
+    top_payee_payer,
+    channel_name,
+    sender_transaction_type,
+    outcomes_and_scores
   FROM (
     SELECT *,
       ROW_NUMBER() OVER (
         PARTITION BY lifecycle_id
         ORDER BY event_occurred_at ASC
       ) AS rn
-    FROM AMH_FZ_FDR_DEV_SIT.event_store
+    FROM base_event_store_full
     WHERE
-      LOWER(event_type) IN ('transfer_initiation', 'feedback')
-      AND JSON_EXTRACT_SCALAR(outcomes_and_scores,"$.decision.outcomeDecision")
+      JSON_EXTRACT_SCALAR(outcomes_and_scores,"$.decision.outcomeDecision")
           IN ('approve','decline','review')
-      AND bq_insert_timestamp >= '2025-09-22 00:00:00+00'
   )
   WHERE rn = 1
 )
 
--- 🧱 3. Alerts
+-- 🧱 4. Alerts - Combined with base_arrival filter
 , base_arrival_alert AS (
-  SELECT id.identifier
+  SELECT
+    id.identifier
   FROM (
     SELECT
       id.identifier,
@@ -86,15 +122,18 @@ WITH base_arrival AS (
       ) AS rn
     FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival
     WHERE
-      alert = TRUE
+      LOWER(id.channelId) = 'transfers'  -- ⚡ EARLY FILTER
+      AND alert = TRUE
+      AND updatedTimestamp >= '2025-09-22 00:00:00+00'
       AND TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-09-22 00:00:00+00')
       AND TIMESTAMP_MILLIS(id.timestamp) < TIMESTAMP('2025-10-06 16:00:00+00')
-      AND updatedTimestamp >= '2025-09-22 00:00:00+00'
+      AND DATE(updatedTimestamp) >= '2025-09-22'
+      AND DATE(updatedTimestamp) <= '2025-10-06'
   )
   WHERE rn = 1
 )
 
--- 🧱 4. Event Store for Alerts
+-- 🧱 5. Event Store for Alerts (transfer_initiation only)
 , base_event_store_alert AS (
   SELECT
     lifecycle_id,
@@ -106,17 +145,15 @@ WITH base_arrival AS (
     SELECT *,
       ROW_NUMBER() OVER (
         PARTITION BY lifecycle_id
-        ORDER BY bq_insert_timestamp ASC
+        ORDER BY event_occurred_at ASC
       ) AS rn
-    FROM AMH_FZ_FDR_DEV_SIT.event_store
-    WHERE
-      LOWER(event_type) = 'transfer_initiation'
-      AND bq_insert_timestamp >= '2025-09-22 00:00:00+00'
+    FROM base_event_store_full
+    WHERE event_type = 'transfer_initiation'  -- Already lowercase from CTE
   )
   WHERE rn = 1
 )
 
--- 🧱 5. State Updates
+-- 🧱 6. State Updates - Only for valid identifiers
 , base_state_updates AS (
   SELECT
     identifier, statemachineid, state_id, updatedAt
@@ -129,17 +166,19 @@ WITH base_arrival AS (
       ) AS rn
     FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates, UNNEST(ids)
     WHERE
-      updatedTimestamp >= '2025-09-22 00:00:00+00'
+      LOWER(channelId) = "transfers"  -- ⚡ EARLY FILTER
+      AND updatedTimestamp >= '2025-09-22 00:00:00+00'
       AND LOWER(state.id) NOT IN ("closed")
-      AND LOWER(channelId) = "transfers"
       AND LOWER(statemachineid) NOT IN (
         'breach_status','decision','status_digital_activity',
         'status_transfers','transfer_status','operational_status')
+      AND DATE(updatedTimestamp) >= '2025-09-22'
+      AND DATE(updatedTimestamp) <= '2025-10-06'
   )
   WHERE rn = 1
 )
 
--- 🧱 6. State Status
+-- 🧱 7. State Status
 , base_state_status AS (
   SELECT identifier, state_id
   FROM (
@@ -151,14 +190,16 @@ WITH base_arrival AS (
     FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates, UNNEST(ids)
     WHERE
       LOWER(stateMachineId) = 'status'
-      AND TIMESTAMP_MILLIS(updatedAt) >= '2025-09-22 00:00:00+00'
       AND updatedTimestamp >= '2025-09-22 00:00:00+00'
+      AND TIMESTAMP_MILLIS(updatedAt) >= '2025-09-22 00:00:00+00'
       AND TIMESTAMP_MILLIS(updatedAt) < '2025-10-06 16:00:00+00'
+      AND DATE(updatedTimestamp) >= '2025-09-22'
+      AND DATE(updatedTimestamp) <= '2025-10-06'
   )
   WHERE rn = 1
 )
 
--- 🧱 7. Assignee Update
+-- 🧱 8. Assignee Update
 , base_assignee_update AS (
   SELECT identifier, updatedAt
   FROM (
@@ -168,12 +209,15 @@ WITH base_arrival AS (
         ORDER BY updatedAt DESC
       ) AS rn
     FROM AMH_FZ_FDR_DEV_SIT.cm_event_assignee_update, UNNEST(ids)
-    WHERE updatedTimestamp >= '2025-09-22 00:00:00+00'
+    WHERE 
+      updatedTimestamp >= '2025-09-22 00:00:00+00'
+      AND DATE(updatedTimestamp) >= '2025-09-22'
+      AND DATE(updatedTimestamp) <= '2025-10-06'
   )
   WHERE rn = 1
 )
 
--- 🧱 8. Queue Change
+-- 🧱 9. Queue Change
 , base_queue_changed AS (
   SELECT identifier, timestamp
   FROM (
@@ -183,12 +227,18 @@ WITH base_arrival AS (
         ORDER BY TIMESTAMP(cm_event_queue_changed.timestamp) DESC
       ) AS rn
     FROM AMH_FZ_FDR_DEV_SIT.cm_event_queue_changed, UNNEST(ids)
-    WHERE updatedTimestamp >= '2025-09-22 00:00:00+00'
+    WHERE 
+      updatedTimestamp >= '2025-09-22 00:00:00+00'
+      AND DATE(updatedTimestamp) >= '2025-09-22'
+      AND DATE(updatedTimestamp) <= '2025-10-06'
   )
   WHERE rn = 1
 )
 
--- 🧱 9. Rules
+-- 🧱 10. Rules - Use consolidated event_store scan and join only needed identifiers
+, valid_identifiers AS (
+  SELECT DISTINCT identifier FROM base_arrival
+)
 , rules AS (
   SELECT
     es_rule.lifecycle_id,
@@ -197,21 +247,20 @@ WITH base_arrival AS (
     SELECT
       e.lifecycle_id,
       TRIM(rule_id) AS rule_id
-    FROM AMH_FZ_FDR_DEV_SIT.event_store e,
+    FROM base_event_store_full e,
       UNNEST(SPLIT(e.rules_triggered, ';')) AS rule_id
-    WHERE
-      LOWER(e.event_type) IN ('transfer_initiation', 'feedback')
-      AND e.bq_insert_timestamp >= '2025-09-22 00:00:00+00'
+    WHERE 
+      e.lifecycle_id IN (SELECT identifier FROM valid_identifiers)  -- ⚡ Filter early
   ) es_rule
   JOIN AMH_FZ_FDR_DEV_SIT.workflow_rules_vw wr
     ON es_rule.rule_id = wr.id
   GROUP BY es_rule.lifecycle_id
 )
 
--- 🔟 Final aggregation
+-- 🔟 Final aggregation with channel mapping as expression
 SELECT
   "Payment MI" AS report_name,
-  TIMESTAMP_TRUNC(TIMESTAMP_ADD(TIMESTAMP_MILLIS(ca.id.timestamp), INTERVAL 8 HOUR), DAY) AS create_timestamp,
+  TIMESTAMP_TRUNC(TIMESTAMP_ADD(TIMESTAMP_MILLIS(ca.timestamp), INTERVAL 8 HOUR), DAY) AS create_timestamp,
   NULLIF(
     TIMESTAMP_TRUNC(
       GREATEST(
@@ -227,8 +276,8 @@ SELECT
   CASE WHEN LOWER(su.state_id) IN ('genuine','fraud')
        THEN TIMESTAMP_TRUNC(TIMESTAMP_MILLIS(su.updatedAt), HOUR)
   END AS result_on_alert_timestamp,
-  ca.id.payload.schema.customer_portfolio_region AS entity,
-  ca.id.payload.schema.customer_portfolio_country AS portfolio,
+  ca.entity AS entity,
+  ca.portfolio AS portfolio,
   CASE
     WHEN LOWER(es.channel_type) = 'c' THEN 'Payment Card at Card Reader Terminal (including online purchase and ATM)'
     WHEN LOWER(es.channel_type) = 'd' THEN 'Payment Card or Number with Online Details and Device Fingerprint Information'
@@ -247,22 +296,15 @@ SELECT
     WHEN LOWER(es.channel_type) = 'n' THEN 'NA'
     ELSE es.channel_type
   END AS channel,
-  ca.id.payload.schema.customer_portfolio_class AS class,
+  ca.class AS class,
   CASE
-    WHEN LOWER(ca.id.payload.schema.customer_portfolio_country) = 'cd'
-         AND LOWER(ca.id.payload.schema.customer_portfolio_class) = 'pers' THEN 'CIIOM WPB'
-    WHEN LOWER(ca.id.payload.schema.customer_portfolio_country) = 'cd'
-         AND LOWER(ca.id.payload.schema.customer_portfolio_class) = 'buss' THEN 'CIIOM CMB'
-    WHEN LOWER(ca.id.payload.schema.customer_portfolio_country) = 'ms'
-         AND LOWER(ca.id.payload.schema.customer_portfolio_class) = 'pers' THEN 'M&S WPB'
-    WHEN LOWER(ca.id.payload.schema.customer_portfolio_country) = 'fd'
-         AND LOWER(ca.id.payload.schema.customer_portfolio_class) = 'pers' THEN 'First Direct WPB'
-    WHEN LOWER(ca.id.payload.schema.customer_portfolio_country) = 'uk'
-         AND LOWER(ca.id.payload.schema.customer_portfolio_class) = 'pers' THEN 'Red Brand WPB'
-    WHEN LOWER(ca.id.payload.schema.customer_portfolio_country) = 'uk'
-         AND LOWER(ca.id.payload.schema.customer_portfolio_class) = 'buss' THEN 'Red Brand CMB'
-    WHEN LOWER(ca.id.payload.schema.customer_portfolio_country) = 'uk'
-         AND LOWER(ca.id.payload.schema.customer_portfolio_class) = 'priv' THEN 'Red Brand GPB'
+    WHEN LOWER(ca.portfolio) = 'cd' AND LOWER(ca.class) = 'pers' THEN 'CIIOM WPB'
+    WHEN LOWER(ca.portfolio) = 'cd' AND LOWER(ca.class) = 'buss' THEN 'CIIOM CMB'
+    WHEN LOWER(ca.portfolio) = 'ms' AND LOWER(ca.class) = 'pers' THEN 'M&S WPB'
+    WHEN LOWER(ca.portfolio) = 'fd' AND LOWER(ca.class) = 'pers' THEN 'First Direct WPB'
+    WHEN LOWER(ca.portfolio) = 'uk' AND LOWER(ca.class) = 'pers' THEN 'Red Brand WPB'
+    WHEN LOWER(ca.portfolio) = 'uk' AND LOWER(ca.class) = 'buss' THEN 'Red Brand CMB'
+    WHEN LOWER(ca.portfolio) = 'uk' AND LOWER(ca.class) = 'priv' THEN 'Red Brand GPB'
   END AS final_portfolio,
   su.statemachineid AS statemachineID,
   st.state_id AS final_state,
@@ -276,7 +318,7 @@ SELECT
   COUNT(DISTINCT es.customer_id) AS number_of_payment_customers,
   SUM(es.sender_transaction_amount_dbl) AS sum_of_transaction_amount_usd,
   SUM(CAST(es.sender_transaction_amount_dbl AS NUMERIC) * 100) AS sum_of_transaction_original_amount,
-  COUNT(DISTINCT ca.id.identifier) AS count_of_transactions,
+  COUNT(DISTINCT ca.identifier) AS count_of_transactions,
   COUNT(DISTINCT aa.identifier) AS count_of_alerts,
   SUM(es_a.sender_transaction_amount_dbl) AS sum_of_transaction_amount_by_alerts,
   COUNT(DISTINCT es_a.customer_id) AS number_of_alerted_customers,
@@ -305,15 +347,14 @@ SELECT
   END AS lob,
   TIMESTAMP('2025-10-06 16:00:00+00') AS load_datetime
 FROM base_arrival ca
-LEFT JOIN base_event_store es       ON ca.id.identifier = es.lifecycle_id
-LEFT JOIN base_arrival_alert aa     ON ca.id.identifier = aa.identifier
+LEFT JOIN base_event_store es       ON ca.identifier = es.lifecycle_id
+LEFT JOIN base_arrival_alert aa     ON ca.identifier = aa.identifier
 LEFT JOIN base_event_store_alert es_a ON aa.identifier = es_a.lifecycle_id
-LEFT JOIN base_state_updates su     ON ca.id.identifier = su.identifier
-LEFT JOIN base_state_status st      ON ca.id.identifier = st.identifier
-LEFT JOIN base_assignee_update asu  ON ca.id.identifier = asu.identifier
-LEFT JOIN base_queue_changed q      ON ca.id.identifier = q.identifier
-LEFT JOIN rules r                   ON ca.id.identifier = r.lifecycle_id
-WHERE LOWER(ca.id.channelId) = 'transfers'
+LEFT JOIN base_state_updates su     ON ca.identifier = su.identifier
+LEFT JOIN base_state_status st      ON ca.identifier = st.identifier
+LEFT JOIN base_assignee_update asu  ON ca.identifier = asu.identifier
+LEFT JOIN base_queue_changed q      ON ca.identifier = q.identifier
+LEFT JOIN rules r                   ON ca.identifier = r.lifecycle_id
 GROUP BY
   create_timestamp, action_on_alert_timestamp, result_on_alert_timestamp,
   entity, portfolio, channel, class, final_portfolio, statemachineID,
