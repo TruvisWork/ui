@@ -54,7 +54,7 @@ WITH base_arrival AS (
     fdz_channel,
     entity_type,
     payment_revision_code,
-    top_payee_payer,
+    tpp_payee_payer,
     channel_name,
     sender_transaction_type,
     outcomes_and_scores,
@@ -84,7 +84,7 @@ WITH base_arrival AS (
     fdz_channel,
     entity_type,
     payment_revision_code,
-    top_payee_payer,
+    tpp_payee_payer,
     channel_name,
     sender_transaction_type,
     outcomes_and_scores
@@ -104,10 +104,10 @@ WITH base_arrival AS (
 
 -- 🧱 4. Alerts
 , base_arrival_alert AS (
-  SELECT id.identifier
+  SELECT iden
   FROM (
     SELECT
-      id.identifier,
+      id.identifier as iden,
       ROW_NUMBER() OVER (
         PARTITION BY id.identifier
         ORDER BY TIMESTAMP(timestamp) ASC
@@ -309,7 +309,7 @@ SELECT
   SUM(es.sender_transaction_amount_dbl) AS sum_of_transaction_amount_usd,
   SUM(CAST(es.sender_transaction_amount_dbl AS NUMERIC) * 100) AS sum_of_transaction_original_amount,
   COUNT(DISTINCT ca.id.identifier) AS count_of_transactions,
-  COUNT(DISTINCT aa.identifier) AS count_of_alerts,
+  COUNT(DISTINCT aa.iden) AS count_of_alerts,
   SUM(es_a.sender_transaction_amount_dbl) AS sum_of_transaction_amount_by_alerts,
   COUNT(DISTINCT es_a.customer_id) AS number_of_alerted_customers,
   SUM(CAST(es_a.sender_transaction_amount_dbl AS NUMERIC) * 100) AS sum_of_transaction_original_amount_by_alerts,
@@ -322,7 +322,7 @@ SELECT
           AND LOWER(es.event_type) = 'transfer_initiation'
           AND (LOWER(es.entity_type) != 'b' OR es.entity_type IS NULL)
           AND LOWER(es.payment_revision_code) = 'o'
-          AND LOWER(es.top_payee_payer) IN ('e', 'b', 'n', 'd'))
+          AND LOWER(es.tpp_payee_payer) IN ('e', 'b', 'n', 'd'))
       OR (LOWER(es.channel_name) = 'l' AND LOWER(es.sender_transaction_type) = 'bt')
       THEN 'GPB'
     ELSE CASE
@@ -338,8 +338,8 @@ SELECT
   TIMESTAMP('2025-10-06 16:00:00+00') AS load_datetime
 FROM base_arrival ca
 LEFT JOIN base_event_store es       ON ca.id.identifier = es.lifecycle_id
-LEFT JOIN base_arrival_alert aa     ON ca.id.identifier = aa.identifier
-LEFT JOIN base_event_store_alert es_a ON aa.identifier = es_a.lifecycle_id
+LEFT JOIN base_arrival_alert aa     ON ca.id.identifier = aa.iden
+LEFT JOIN base_event_store_alert es_a ON aa.iden = es_a.lifecycle_id
 LEFT JOIN base_state_updates su     ON ca.id.identifier = su.identifier
 LEFT JOIN base_state_status st      ON ca.id.identifier = st.identifier
 LEFT JOIN base_assignee_update asu  ON ca.id.identifier = asu.identifier
