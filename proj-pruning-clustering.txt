@@ -1,0 +1,395 @@
+INSERT INTO
+  AMH_FZ_REPORT_MARTS_TABLES_DEV.Payment_Mart (
+    report_name,
+    create_timestamp,
+    action_on_alert_timestamp,
+    result_on_alert_timestamp,
+    entity,
+    portfolio,
+    channel,
+    class,
+    final_portfolio,
+    statemachineID,
+    final_state,
+    payment_source,
+    transaction_status,
+    sender_transaction_currency,
+    number_of_payment_customers,
+    sum_of_transaction_amount_usd,
+    sum_of_transaction_original_amount,
+    count_of_transactions,
+    count_of_alerts,
+    sum_of_transaction_amount_by_alerts,
+    number_of_alerted_customers,
+    sum_of_transaction_original_amount_by_alerts,
+    sum_of_transaction_amount_gbp,
+    sum_of_transaction_amount_gbp_by_alerts,
+    lob,
+    load_datetime
+  ) (
+    SELECT
+      "Payment MI" AS report_name,
+      final_set.create_timestamp AS create_timestamp,
+      final_set.action_on_alert_timestamp AS action_on_alert_timestamp,
+      final_set.result_on_alert_timestamp AS result_on_alert_timestamp,
+      final_set.entity AS entity,
+      final_set.portfolio AS portfolio,
+      CASE
+        WHEN LOWER(final_set.channel) = 'c' THEN 'Payment Card at Card Reader Terminal (including online purchase and ATM)'
+        WHEN LOWER(final_set.channel) = 'd' THEN 'Payment Card or Number with Online Details and Device Fingerprint Information'
+        WHEN LOWER(final_set.channel) = 'e' THEN 'Payment Card or Number with Online Details'
+        WHEN LOWER(final_set.channel) = 'o' THEN 'Online Banking (internet, mobile phone)'
+        WHEN LOWER(final_set.channel) = 'w' THEN 'Online Banking with device fingerprint information'
+        WHEN LOWER(final_set.channel) = 'p' THEN 'Phone Banking'
+        WHEN LOWER(final_set.channel) = 'h' THEN 'Self Bank Branch'
+        WHEN LOWER(final_set.channel) = 'm' THEN 'Correspondence(for non-mon and check deposit)'
+        WHEN LOWER(final_set.channel) = 'b' THEN 'Bank Processing(include bank initiated non-mon maintenance, ACH debit, EFT processing)'
+        WHEN LOWER(final_set.channel) = 'f' THEN 'Financial Consultant'
+        WHEN LOWER(final_set.channel) = 'r' THEN 'Other'
+        WHEN LOWER(final_set.channel) = 's' THEN 'Merchant - Acquirer Processing with Device Fingerprint'
+        WHEN LOWER(final_set.channel) = 't' THEN 'Merchant - Acquirer Processing'
+        WHEN LOWER(final_set.channel) = 'u' THEN 'Unknown'
+        WHEN LOWER(final_set.channel) = 'n' THEN 'NA'
+        ELSE final_set.channel
+      END AS channel,
+      final_set.class AS class,
+      final_set.final_portfolio AS final_portfolio,
+      final_set.statemachineID AS statemachineID,
+      final_set.final_state AS final_state,
+      final_set.payment_source AS payment_source,
+      final_set.transaction_status AS transaction_status,
+      final_set.sender_transaction_currency AS sender_transaction_currency,
+      final_set.number_of_payment_customers AS number_of_payment_customers,
+      final_set.sum_of_transaction_amount_hkd AS sum_of_transaction_amount_usd,
+      final_set.sum_of_transaction_original_amount AS sum_of_transaction_original_amount,
+      final_set.count_of_transactions AS count_of_transactions,
+      final_set.count_of_alerts AS count_of_alerts,
+      final_set.sum_of_transaction_amount_by_alerts AS sum_of_transaction_amount_by_alerts,
+      final_set.number_of_alerted_customers AS number_of_alerted_customers,
+      final_set.sum_of_transaction_original_amount_by_alerts AS sum_of_transaction_original_amount_by_alerts,
+      final_set.sum_of_transaction_amount_gbp AS sum_of_transaction_amount_gbp,
+      final_set.sum_of_transaction_amount_gbp_by_alerts AS sum_of_transaction_amount_gbp_by_alerts,
+      lob,
+      TIMESTAMP('2025-10-06 16:00:00+00') AS load_datetime
+    FROM (
+      SELECT
+        -- cm_event_arrival derived/nested columns
+        TIMESTAMP_TRUNC(TIMESTAMP_ADD(TIMESTAMP_MILLIS(cm_event_arrival.id.timestamp), INTERVAL 8 hour), day) AS create_timestamp,
+        cm_event_arrival.id.payload.schema.customer_portfolio_region AS entity,
+        cm_event_arrival.id.payload.schema.customer_portfolio_country AS portfolio,
+        cm_event_arrival.id.payload.schema.customer_portfolio_class AS class,
+        cm_event_arrival.lifecycle_identifier AS event_id, -- *** NEW COLUMN USED HERE ***
+        
+        -- Derived final_portfolio
+        CASE
+          WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'cd' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class) = 'pers' THEN 'CIIOM WPB'
+          WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'cd' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class) = 'buss' THEN 'CIIOM CMB'
+          WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'ms' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class) = 'pers' THEN 'M&S WPB'
+          WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'fd' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class) = 'pers' THEN 'First Direct WPB'
+          WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'uk' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class) = 'pers' THEN 'Red Brand WPB'
+          WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'uk' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class) = 'buss' THEN 'Red Brand CMB'
+          WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'uk' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class) = 'priv' THEN 'Red Brand GPB'
+        END AS final_portfolio,
+        
+        -- Derived action_on_alert_timestamp
+        NULLIF(TIMESTAMP_TRUNC(GREATEST(COALESCE(TIMESTAMP_MILLIS(cm_event_assignee_update.updatedAt), '1970-01-01 00:00:00 UTC'), COALESCE(TIMESTAMP_MILLIS(cm_event_state_updates.updatedAt), '1970-01-01 00:00:00 UTC'), COALESCE(TIMESTAMP(cm_event_arrival.timestamp), '1970-01-01 00:00:00 UTC'), COALESCE(TIMESTAMP(cm_event_queue_changed.timestamp), '1970-01-01 00:00:00 UTC')), hour), '1970-01-01 00:00:00') AS action_on_alert_timestamp,
+        
+        -- cm_event_state_updates/derived result_on_alert_timestamp
+        cm_event_state_updates.statemachineid AS statemachineID,
+        CASE
+          WHEN LOWER(cm_event_state_updates.state.id) = "genuine" OR LOWER(cm_event_state_updates.state.id) = "fraud" THEN TIMESTAMP_TRUNC(TIMESTAMP_MILLIS(cm_event_state_updates.updatedAt), hour)
+        END AS result_on_alert_timestamp,
+
+        -- cm_event_state_updates_status
+        cm_event_state_updates_status.state.id AS final_state,
+
+        -- event_store fields
+        event_store.channel_type AS channel,
+        event_store.source AS payment_source,
+        CASE
+          WHEN JSON_EXTRACT_SCALAR(event_store.outcomes_and_scores, "$.decision.outcomeDecision") = "approve" THEN "approved"
+          WHEN JSON_EXTRACT_SCALAR(event_store.outcomes_and_scores, "$.decision.outcomeDecision") = "review" THEN "review"
+          WHEN JSON_EXTRACT_SCALAR(event_store.outcomes_and_scores, "$.decision.outcomeDecision") = "decline" THEN "declined"
+        END AS transaction_status,
+        event_store.sender_transaction_currency AS sender_transaction_currency,
+        
+        -- LOB Calculation fields (need to be in GROUP BY)
+        COALESCE(event_store.customer_type, event_store.alert.customer_type) AS customer_type_coalesced,
+        COALESCE(event_store.customer_id_number, event_store.alert.customer_id_number) AS customer_id_number_coalesced,
+        event_store.payment_message_source,
+        event_store.segment_channel_type,
+        event_store.fdz_channel,
+        event_store.event_type AS es_event_type,
+        event_store.entity_type,
+        event_store.payment_revision_code,
+        event_store.top_payee_payer,
+        event_store.channel_name,
+        event_store.sender_transaction_type,
+
+        -- Aggregation columns from event_store/event_store_alert
+        COUNT(DISTINCT event_store.customer_id) AS number_of_payment_customers,
+        SUM(event_store.sender_transaction_amount_dbl) AS sum_of_transaction_amount_hkd, -- Maps to USD
+        SUM(event_store.sender_transaction_amount_dbl) AS sum_of_transaction_amount_gbp, -- Maps to GBP
+        SUM(CAST(event_store.sender_transaction_amount_dbl AS numeric) * 100) AS sum_of_transaction_original_amount,
+        COUNT(DISTINCT cm_event_arrival_alert.lifecycle_identifier) AS count_of_alerts, -- *** NEW COLUMN USED HERE ***
+        COUNT(DISTINCT cm_event_arrival.lifecycle_identifier) AS count_of_transactions, -- *** NEW COLUMN USED HERE ***
+        SUM(event_store_alert.sender_transaction_amount_dbl) AS sum_of_transaction_amount_by_alerts,
+        COUNT(DISTINCT event_store_alert.customer_id) AS number_of_alerted_customers,
+        SUM(CAST(event_store_alert.sender_transaction_amount_dbl AS numeric) * 100) AS sum_of_transaction_original_amount_by_alerts,
+        SUM(event_store_alert.sender_transaction_amount_dbl) AS sum_of_transaction_amount_gbp_by_alerts,
+        
+        -- LOB Calculation (Left as is, as requested)
+        CASE
+          WHEN (LOWER(event_store.payment_message_source) IN ("hk_gpb_mob", "hk_gpb_web") AND LOWER(event_store.segment_channel_type) = 'w' AND LOWER(event_store.fdz_channel) = 'transfers' AND LOWER(event_store.event_type) = 'transfer_initiation' AND (LOWER(event_store.entity_type) != 'b' OR event_store.entity_type IS NULL) AND LOWER(event_store.payment_revision_code) = 'o' AND LOWER(event_store.top_payee_payer) IN ('e', 'b', 'n', 'd')) OR (LOWER(event_store.channel_name) = 'l' AND LOWER(event_store.sender_transaction_type) = 'bt') THEN 'GPB'
+          ELSE (
+            CASE
+              WHEN (LOWER(COALESCE(event_store.customer_type, event_store.alert.customer_type)) = 'b' AND LOWER(SUBSTR(COALESCE(event_store.customer_id_number, event_store.alert.customer_id_number), 1, 2)) NOT IN ('xw', 'xk', 'xc')) THEN "WSB"
+              WHEN (LOWER(COALESCE(event_store.customer_type, event_store.alert.customer_type)) = 'i'
+                OR (LOWER(COALESCE(event_store.customer_type, event_store.alert.customer_type)) = 'b'
+                  AND LOWER(SUBSTR(COALESCE(event_store.customer_id_number, event_store.alert.customer_id_number), 1, 2)) IN ('xw', 'xk', 'xc'))) THEN "WPB"
+            END
+          )
+        END AS lob
+        
+      FROM (
+        -- cm_event_arrival (Transaction details)
+        SELECT
+          t.lifecycle_identifier, -- *** NEW COLUMN USED ***
+          t.id.timestamp,
+          t.id.channelId,
+          t.id.payload.schema.customer_portfolio_region,
+          t.id.payload.schema.customer_portfolio_country,
+          t.id.payload.schema.customer_portfolio_class,
+          t.timestamp,
+          t.alert,
+          t.updatedTimestamp
+        FROM (
+          SELECT
+            *,
+            ROW_NUMBER() OVER(PARTITION BY lifecycle_identifier ORDER BY TIMESTAMP(cm_event_arrival.timestamp) ASC) AS rownum -- *** NEW COLUMN USED ***
+          FROM
+            AMH_FZ_FDR_DEV_SIT.cm_event_arrival
+          WHERE
+            updatedTimestamp >= '2025-09-22 00:00:00+00'
+            AND TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-09-22 00:00:00+00')
+            AND TIMESTAMP_MILLIS(id.timestamp) < TIMESTAMP('2025-10-06 16:00:00+00')
+        ) AS t
+        WHERE
+          t.rownum = 1
+      ) cm_event_arrival
+      
+      -- LEFT JOIN 1: event_store (Core transaction/decision data)
+      LEFT JOIN (
+        SELECT
+          t.lifecycle_id,
+          t.customer_id,
+          t.channel_type,
+          t.source,
+          t.sender_transaction_currency,
+          t.sender_transaction_amount_dbl,
+          t.outcomes_and_scores,
+          t.alert.customer_type,
+          t.alert.customer_id_number,
+          t.rules_triggered,
+          t.customer_type,
+          t.customer_id_number,
+          t.payment_message_source,
+          t.segment_channel_type,
+          t.fdz_channel,
+          t.event_type,
+          t.entity_type,
+          t.payment_revision_code,
+          t.top_payee_payer,
+          t.channel_name,
+          t.sender_transaction_type
+        FROM (
+          SELECT
+            *,
+            ROW_NUMBER() OVER(PARTITION BY lifecycle_id ORDER BY event_occurred_at ASC) AS row_num
+          FROM
+            AMH_FZ_FDR_DEV_SIT.event_store
+          WHERE
+            LOWER(event_type) IN ('transfer_initiation', 'feedback')
+            AND JSON_EXTRACT_SCALAR(outcomes_and_scores, "$.decision.outcomeDecision") IN ('approve', 'decline', 'review')
+            AND bq_insert_timestamp >= '2025-09-22 00:00:00+00'
+        ) AS t
+        WHERE
+          t.row_num = 1
+      ) event_store
+      ON
+        cm_event_arrival.lifecycle_identifier = event_store.lifecycle_id -- *** JOINING ON NEW COLUMN ***
+        
+      -- LEFT JOIN 2: cm_event_arrival_alert (To count alerts)
+      LEFT JOIN (
+        SELECT
+          t.lifecycle_identifier, -- *** NEW COLUMN USED ***
+          t.id.timestamp
+        FROM (
+          SELECT
+            *,
+            ROW_NUMBER() OVER(PARTITION BY lifecycle_identifier ORDER BY TIMESTAMP(cm_event_arrival.timestamp) ASC) AS rownum -- *** NEW COLUMN USED ***
+          FROM
+            AMH_FZ_FDR_DEV_SIT.cm_event_arrival
+          WHERE
+            TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-09-22 00:00:00+00')
+            AND TIMESTAMP_MILLIS(id.timestamp) < TIMESTAMP('2025-10-06 16:00:00+00')
+            AND updatedTimestamp >= '2025-09-22 00:00:00+00'
+            AND alert = TRUE
+        ) AS t
+        WHERE
+          t.rownum = 1
+      ) cm_event_arrival_alert
+      ON
+        cm_event_arrival.lifecycle_identifier = cm_event_arrival_alert.lifecycle_identifier -- *** JOINING ON NEW COLUMN ***
+        
+      -- LEFT JOIN 3: event_store_alert (To get alert-related amounts/customers - uses event_store as source)
+      LEFT JOIN (
+        SELECT
+          t.lifecycle_id,
+          t.sender_transaction_amount_dbl,
+          t.customer_id
+        FROM (
+          SELECT
+            *,
+            ROW_NUMBER() OVER(PARTITION BY lifecycle_id ORDER BY bq_insert_timestamp ASC) AS row_num
+          FROM
+            AMH_FZ_FDR_DEV_SIT.event_store
+          WHERE
+            bq_insert_timestamp >= '2025-09-22 00:00:00+00'
+            AND LOWER(event_type) IN ('transfer_initiation')
+        ) AS t
+        WHERE
+          t.row_num = 1
+      ) event_store_alert
+      ON
+        cm_event_arrival_alert.lifecycle_identifier = event_store_alert.lifecycle_id -- *** JOINING ON NEW COLUMN ***
+        
+      -- LEFT JOIN 4: cm_event_state_updates (Final state for primary state machine)
+      LEFT JOIN (
+        SELECT
+          t.lifecycle_identifier, -- *** NEW COLUMN USED ***
+          t.state.id,
+          t.statemachineid,
+          t.updatedAt
+        FROM (
+          SELECT
+            lifecycle_identifier, state.id, statemachineid, updatedAt, updatedTimestamp, -- *** NEW COLUMN USED ***
+            ROW_NUMBER() OVER(PARTITION BY lifecycle_identifier ORDER BY updatedAt DESC) AS rownum -- *** NEW COLUMN USED ***
+          FROM
+            AMH_FZ_FDR_DEV_SIT.cm_event_state_updates
+          LEFT JOIN
+            UNNEST(ids)
+          WHERE
+            updatedTimestamp >= '2025-09-22 00:00:00+00'
+            AND LOWER(state.id) NOT IN ("closed")
+            AND LOWER(channelId) IN ("transfers")
+            AND LOWER(statemachineid) NOT IN ('breach_status', 'decision', 'status_digital_activity', 'status_transfers', 'transfer_status', 'operational_status')
+        ) AS t
+        WHERE
+          t.rownum = 1
+      ) cm_event_state_updates
+      ON
+        cm_event_arrival.lifecycle_identifier = cm_event_state_updates.lifecycle_identifier -- *** JOINING ON NEW COLUMN ***
+        
+      -- LEFT JOIN 5: cm_event_state_updates_status (Final state for 'status' state machine)
+      LEFT JOIN (
+        SELECT
+          t.lifecycle_identifier, -- *** NEW COLUMN USED ***
+          t.state.id,
+          t.updatedAt
+        FROM (
+          SELECT
+            lifecycle_identifier, state.id, updatedAt, updatedTimestamp, -- *** NEW COLUMN USED ***
+            ROW_NUMBER() OVER(PARTITION BY lifecycle_identifier ORDER BY updatedAt DESC) AS rownum -- *** NEW COLUMN USED ***
+          FROM
+            AMH_FZ_FDR_DEV_SIT.cm_event_state_updates
+          LEFT JOIN
+            UNNEST(ids)
+          WHERE
+            LOWER(stateMachineId) = 'status'
+            AND TIMESTAMP_MILLIS(updatedAt) >= '2025-09-22 00:00:00+00'
+            AND updatedTimestamp >= '2025-09-22 00:00:00+00'
+            AND TIMESTAMP_MILLIS(updatedAt) < '2025-10-06 16:00:00+00'
+        ) AS t
+        WHERE
+          t.rownum = 1
+      ) cm_event_state_updates_status
+      ON
+        cm_event_arrival.lifecycle_identifier = cm_event_state_updates_status.lifecycle_identifier -- *** JOINING ON NEW COLUMN ***
+        
+      -- LEFT JOIN 6: cm_event_assignee_update (Used for action_on_alert_timestamp)
+      LEFT JOIN (
+        SELECT
+          t.lifecycle_identifier, -- *** NEW COLUMN USED ***
+          t.updatedAt
+        FROM (
+          SELECT
+            lifecycle_identifier, updatedAt, updatedTimestamp, -- *** NEW COLUMN USED ***
+            ROW_NUMBER() OVER(PARTITION BY lifecycle_identifier ORDER BY updatedAt DESC) AS rownum -- *** NEW COLUMN USED ***
+          FROM
+            AMH_FZ_FDR_DEV_SIT.cm_event_assignee_update
+          LEFT JOIN
+            UNNEST(ids)
+          WHERE
+            updatedTimestamp >= '2025-09-22 00:00:00+00'
+        ) AS t
+        WHERE
+          t.rownum = 1
+      ) cm_event_assignee_update
+      ON
+        cm_event_arrival.lifecycle_identifier = cm_event_assignee_update.lifecycle_identifier -- *** JOINING ON NEW COLUMN ***
+        
+      -- LEFT JOIN 7: cm_event_queue_changed (Used for action_on_alert_timestamp)
+      LEFT JOIN (
+        SELECT
+          t.lifecycle_identifier, -- *** NEW COLUMN USED ***
+          t.timestamp
+        FROM (
+          SELECT
+            cm_event_queue_changed.timestamp AS timestamp,
+            lifecycle_identifier, -- *** NEW COLUMN USED ***
+            ROW_NUMBER() OVER(PARTITION BY lifecycle_identifier ORDER BY TIMESTAMP(cm_event_queue_changed.timestamp) DESC) AS rownum -- *** NEW COLUMN USED ***
+          FROM
+            AMH_FZ_FDR_DEV_SIT.cm_event_queue_changed
+          LEFT JOIN
+            UNNEST(ids)
+          WHERE
+            updatedTimestamp >= '2025-09-22 00:00:00+00'
+        ) AS t
+        WHERE
+          t.rownum = 1
+      ) cm_event_queue_changed
+      ON
+        cm_event_arrival.lifecycle_identifier = cm_event_queue_changed.lifecycle_identifier -- *** JOINING ON NEW COLUMN ***
+
+      WHERE
+        LOWER(cm_event_arrival.id.channelId) IN ('transfers')
+      GROUP BY
+        create_timestamp,
+        action_on_alert_timestamp,
+        result_on_alert_timestamp,
+        entity,
+        portfolio,
+        channel,
+        lob,
+        class,
+        final_portfolio,
+        statemachineID,
+        final_state,
+        payment_source,
+        transaction_status,
+        sender_transaction_currency,
+        customer_type_coalesced,
+        customer_id_number_coalesced,
+        event_store.payment_message_source,
+        event_store.segment_channel_type,
+        event_store.fdz_channel,
+        es_event_type,
+        event_store.entity_type,
+        event_store.payment_revision_code,
+        event_store.top_payee_payer,
+        event_store.channel_name,
+        event_store.sender_transaction_type,
+        event_id
+    ) final_set
+  )
