@@ -1,0 +1,241 @@
+#!/usr/bin/env groovy
+
+@Library('your-shared-library') _
+
+def call(Map pipelineParams = [:]) {
+
+    def nodeLabel = pipelineParams.nodeLabel ?: 'cm-linux'
+
+    pipeline {
+        agent { label(nodeLabel) }
+
+        options {
+            ansiColor('xterm')
+            timestamps()
+            disableConcurrentBuilds()
+            timeout(time: pipelineParams.timeout ?: 60, unit: 'MINUTES')
+            buildDiscarder(logRotator(
+                numToKeepStr: "${(pipelineParams.buildDiscarder ?: [:]).numToKeepStr ?: '15'}",
+                daysToKeepStr: "${(pipelineParams.buildDiscarder ?: [:]).daysToKeepStr ?: '-1'}",
+                artifactNumToKeepStr: "${(pipelineParams.buildDiscarder ?: [:]).artifactNumToKeepStr ?: '-1'}",
+                artifactDaysToKeepStr: "${(pipelineParams.buildDiscarder ?: [:]).artifactDaysToKeepStr ?: '-1'}"
+            ))
+        }
+
+        parameters {
+            choice(
+                name: 'env', 
+                choices: ['dev'], 
+                description: 'Environment'
+            )
+            booleanParam(
+                name: 'skipSonarqube',
+                defaultValue: false,
+                description: 'Should Sonarqube code analysis be skipped? Default: false.'
+            )
+            booleanParam(
+                name: 'skipCyberflowsSast',
+                defaultValue: false,
+                description: 'Should Cyberflow code analysis be skipped? Default: false.'
+            )
+            booleanParam(
+                name: 'skipSonatypeIQ',
+                defaultValue: false,
+                description: 'Should SonatypeIQ artifact analysis be skipped? Default: false.'
+            )
+        }
+
+        environment {
+            DEBUG = "${pipelineParams.debug ?: false}"
+            GOOGLE_APPLICATION_CREDENTIALS = "${WORKSPACE}/.gcloud/application-credentials.json"
+            CLOUDSDK_CONFIG = "${WORKSPACE}/.config"
+            KUBECONFIG = "${WORKSPACE}/.kube/config"
+            HELM_CACHE_HOME = "${WORKSPACE}/.helm/cache"
+            HELM_CONFIG_HOME = "${WORKSPACE}/.helm/config"
+            HELM_DATA_HOME = "${WORKSPACE}/.helm/data"
+            CYBERFLOWS_PATH = "${WORKSPACE}/cyberflowscli/bin"
+            GRADLE_CHECKOUT_DIR = 'gradlefiles'
+            APP_NAME = "${JOB_NAME.split('/')[1-2]}".replace('-build', '').replace('-deploy', '')
+            GIT_COMMIT_SHORT = sh(
+                script: "git rev-parse --short=7 ${GIT_COMMIT}",
+                returnStdout: true
+            ).trim()
+            IMAGE_TAG = "${GIT_BRANCH.replaceAll('/', '--').take(20)}-${GIT_COMMIT_SHORT}-${BUILD_NUMBER}"
+        }
+
+        stages {
+            stage('Initialize pipeline') {
+                steps {
+                    script {
+                        opsConfigGlobal = readYaml(text: libraryResource(resource: 'infra/infraConfiguration.yaml'))
+                        echo "opsConfigGlobal:"
+                        echo("${opsConfigGlobal}")
+                        opsConfigEnv = opsConfigGlobal.environments."${params.env}"
+                        // TODO: future improvements
+                        // env.SONARQUBE_RESULT = "UNKNOWN"
+                        // env.SONATYPE_RESULT = "UNKNOWN"
+                    }
+                }
+            }
+
+            stage('Install cyberflows-cli and login') {
+                when {
+                    expression { !params.skipCyberflowsSast }
+                }
+                steps {
+                    script {
+                        def cyberflowTarGz = getArtifactFromNexus(
+                            nexusCredentialsId: opsConfigEnv.nexusCredentialsId,
+                            artifactId: opsConfigGlobal.cyberflows.artifactId,
+                            artifactVersion: opsConfigGlobal.cyberflows.artifactVersion,
+                            extension: opsConfigGlobal.cyberflows.extension,
+                            groupId: opsConfigGlobal.cyberflows.groupId,
+                            nexusHost: opsConfigGlobal.cyberflows.nexusHost,
+                            repository: opsConfigGlobal.cyberflows.repository
+                        )
+                        sh("mkdir -p ${env.CYBERFLOWS_PATH} && tar zxf ${cyberflowTarGz} -C ${env.CYBERFLOWS_PATH}")
+                        loginCyberflows(
+                            cyberflowsCredentialsId: opsConfigEnv.cyberflowsCredentialsId
+                        )
+                    }
+                }
+            }
+
+            stage('Cyberflows SAST Scan') {
+                when {
+                    expression { !params.skipCyberflowsSast }
+                }
+                steps {
+                    script {
+                        echo "Creating Cyberflows SAST configuration"
+                        cfConfigSast = createCyberflowsSastConfig(
+                            appName: "${opsConfigEnv.gcpProject}-scan",
+                            cyberflowsProjectId: opsConfigEnv.cyberflowsProjectId,
+                            eim: opsConfigEnv.eim,
+                            gitUrl: env.GIT_URL,
+                            branchName: env.CHANGE_BRANCH,
+                            sastAppType: opsConfigGlobal.cyberflows.sastAppType
+                        )
+                        echo "Launching Cyberflows SAST scan"
+                        sastScanId = createCyberflowsScan(
+                            config: cfConfigSast,
+                            requiresZipUpload: 'false'
+                        )
+                    }
+                }
+            }
+
+            stage('Install Dependencies') {
+                steps {
+                    script {
+                        try {
+                            gradleZipNexusCustomConfigurationSet(
+                                nexusCredentialsId: opsConfigEnv.nexusCredentialsId
+                            )
+
+                            echo '<<<< Installing Gradle dependencies >>>>'
+                            sh './gradlew clean build -x test'
+                            
+                        } catch (Exception e) {
+                            error("[Error occurred during installing dependencies for Gradle: " + e.toString())
+                        }
+                    }
+                }
+            }
+
+            stage('Sonatype Scan') {
+                when {
+                    expression { !params.skipSonatypeIQ }
+                }
+                steps {
+                    withEnv(['CHECKOUT_DIR=.']) {
+                        script {
+                            sonatypeRepoName = env.GIT_URL.split('/')[-1].replaceAll(/\.git$/, '')
+                            sonatypeIdOScanPython(
+                                nexusIqCLIVersion: opsConfigGlobal.sonatype.nexusIqCLIVersion,
+                                sonaTypeProjectId: "${opsConfigEnv.gcpProject}_${sonatypeRepoName}",
+                                sonatypeCredentialsId: opsConfigEnv.sonatypeCredentialsId,
+                                sonatypeUrl: 'https://sonatypeiq02.systems.uk.hsbc'
+                            )
+                        }
+                    }
+                }
+            }
+
+            stage('Unit test') {
+                steps {
+                    sh """
+                        echo "Running Gradle tests..."
+                        ./gradlew test \
+                        --rerun-tasks \
+                        -PjunitXml=build/test-results/test/TEST-*.xml \
+                        -PcoverageXml=build/reports/jacoco/test/jacocoTestReport.xml
+                    """
+                    
+                    // Publish test results
+                    junit allowEmptyResults: true, testResults: '**/build/test-results/test/*.xml'
+                    
+                    // Publish code coverage if using JaCoCo
+                    publishCoverage adapters: [jacocoAdapter('**/build/reports/jacoco/test/jacocoTestReport.xml')]
+                }
+            }
+
+            stage('Run Sonarqube scan') {
+                when {
+                    expression { !params.skipSonarqube }
+                }
+                steps {
+                    script {
+                        sonarqubeRepoName = env.GIT_URL.split('/')[-1].replaceAll(/\.git$/, '')
+                        pythonSonarqubeScan(
+                            projectKey: "${opsConfigEnv.gcpProject}_${sonarqubeRepoName}-scan",
+                            sonarHostUrl: "https://${params.env}-support-sonar.it.global.hsbc:9009/sonar",
+                            sonarTokenId: opsConfigEnv.sonarTokenId,
+                            sonarSource: "*.*",
+                            sonarBranchName: env.CHANGE_BRANCH
+                        )
+                    }
+                }
+            }
+
+            stage('SonarQube analysis') {
+                when {
+                    expression { !params.skipSonarqube }
+                }
+                steps {
+                    script {
+                        echo "Checking SonarQube analysis results"
+                        sonarqubeQualityGate(
+                            sonarTokenId: opsConfigEnv.sonarTokenId,
+                            reportPath: "${WORKSPACE}/.scannerwork/report-task.txt"
+                        )
+                    }
+                }
+            }
+
+            stage('PR Checker') {
+                steps {
+                    echo "Calling CODEQA PR Checker"
+                    prCheckerScoreRetail()
+                }
+            }
+
+            stage('Cyberflows SAST scan results') {
+                when {
+                    expression { !params.skipCyberflowsSast }
+                }
+                steps {
+                    script {
+                        echo "Checking Cyberflows SAST scan results"
+                        getCyberflowsScan(
+                            scanId: sastScanId,
+                            threshold: 'High',
+                            scanType: 'SAST',
+                            cyberflowsProjectId: opsConfigEnv.cyberflowsProjectId
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
