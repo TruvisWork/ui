@@ -1,5 +1,5 @@
--- Step 1: Create temp table for base cm_event_arrival
-CREATE TEMP TABLE temp_cm_event_arrival AS
+-- Step 1: Create temp table for ALL cm_event_arrival data (query table once)
+CREATE TEMP TABLE temp_cm_event_arrival_raw AS
 SELECT
   id.identifier,
   id.timestamp,
@@ -9,20 +9,78 @@ SELECT
   id.payload.schema.customer_portfolio_class,
   id.payload.schema.event_type,
   timestamp AS event_timestamp,
+  updatedTimestamp,
+  alert
+FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival
+WHERE
+  updatedTimestamp >= '2025-09-22 00:00:00+00'
+  AND TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-09-22 00:00:00+00')
+  AND TIMESTAMP_MILLIS(id.timestamp) < TIMESTAMP('2025-10-06 16:00:00+00');
+
+-- Step 2: Create temp table for ALL event_store data (query table once)
+CREATE TEMP TABLE temp_event_store_raw AS
+SELECT
+  lifecycle_id,
+  channel_type,
+  source,
+  sender_transaction_currency,
+  sender_transaction_amount_dbl,
+  customer_id,
+  payment_message_source,
+  segment_channel_type,
+  fdz_channel,
+  event_type,
+  entity_type,
+  payment_revision_code,
+  top_payee_payer,
+  channel_name,
+  sender_transaction_type,
+  customer_type,
+  customer_id_number,
+  rules_triggered,
+  outcomes_and_scores,
+  event_occurred_at,
+  bq_insert_timestamp
+FROM AMH_FZ_FDR_DEV_SIT.event_store
+WHERE bq_insert_timestamp >= '2025-09-22 00:00:00+00';
+
+-- Step 3: Create filtered temp tables from raw data
+-- Base cm_event_arrival (for main flow)
+CREATE TEMP TABLE temp_cm_event_arrival AS
+SELECT
+  identifier,
+  timestamp,
+  channelId,
+  customer_portfolio_region,
+  customer_portfolio_country,
+  customer_portfolio_class,
+  event_type,
+  event_timestamp,
   updatedTimestamp
 FROM (
   SELECT
     *,
-    ROW_NUMBER() OVER(PARTITION BY id.identifier ORDER BY TIMESTAMP(timestamp) ASC) AS rownum
-  FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival
-  WHERE
-    updatedTimestamp >= '2025-09-22 00:00:00+00'
-    AND TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-09-22 00:00:00+00')
-    AND TIMESTAMP_MILLIS(id.timestamp) < TIMESTAMP('2025-10-06 16:00:00+00')
+    ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY TIMESTAMP(event_timestamp) ASC) AS rownum
+  FROM temp_cm_event_arrival_raw
 )
 WHERE rownum = 1;
 
--- Step 2: Create temp table for event_store
+-- Step 4: Alerted cm_event_arrival
+CREATE TEMP TABLE temp_cm_event_arrival_alert AS
+SELECT
+  identifier,
+  timestamp,
+  updatedTimestamp
+FROM (
+  SELECT
+    *,
+    ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY TIMESTAMP(event_timestamp) ASC) AS rownum
+  FROM temp_cm_event_arrival_raw
+  WHERE alert = TRUE
+)
+WHERE rownum = 1;
+
+-- Step 5: Base event_store (for main flow with decisions)
 CREATE TEMP TABLE temp_event_store AS
 SELECT
   lifecycle_id,
@@ -50,34 +108,14 @@ FROM (
   SELECT
     *,
     ROW_NUMBER() OVER(PARTITION BY lifecycle_id ORDER BY event_occurred_at ASC) AS row_num
-  FROM AMH_FZ_FDR_DEV_SIT.event_store
+  FROM temp_event_store_raw
   WHERE
     LOWER(event_type) IN ('transfer_initiation', 'feedback')
     AND JSON_EXTRACT_SCALAR(outcomes_and_scores, "$.decision.outcomeDecision") IN ('approve', 'decline', 'review')
-    AND bq_insert_timestamp >= '2025-09-22 00:00:00+00'
 )
 WHERE row_num = 1;
 
--- Step 3: Create temp table for alerted cm_event_arrival
-CREATE TEMP TABLE temp_cm_event_arrival_alert AS
-SELECT
-  id.identifier,
-  id.timestamp,
-  updatedTimestamp
-FROM (
-  SELECT
-    *,
-    ROW_NUMBER() OVER(PARTITION BY id.identifier ORDER BY TIMESTAMP(timestamp) ASC) AS rownum
-  FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival
-  WHERE
-    TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-09-22 00:00:00+00')
-    AND TIMESTAMP_MILLIS(id.timestamp) < TIMESTAMP('2025-10-06 16:00:00+00')
-    AND updatedTimestamp >= '2025-09-22 00:00:00+00'
-    AND alert = TRUE
-)
-WHERE rownum = 1;
-
--- Step 4: Create temp table for event_store alerts
+-- Step 6: Event_store for alerts
 CREATE TEMP TABLE temp_event_store_alert AS
 SELECT
   lifecycle_id,
@@ -90,14 +128,25 @@ FROM (
   SELECT
     *,
     ROW_NUMBER() OVER(PARTITION BY lifecycle_id ORDER BY bq_insert_timestamp ASC) AS row_num
-  FROM AMH_FZ_FDR_DEV_SIT.event_store
-  WHERE
-    bq_insert_timestamp >= '2025-09-22 00:00:00+00'
-    AND LOWER(event_type) IN ('transfer_initiation')
+  FROM temp_event_store_raw
+  WHERE LOWER(event_type) IN ('transfer_initiation')
 )
 WHERE row_num = 1;
 
--- Step 5: Create temp table for cm_event_state_updates
+-- Step 7: Create temp table for ALL cm_event_state_updates data (query table once)
+CREATE TEMP TABLE temp_cm_event_state_updates_raw AS
+SELECT
+  identifier,
+  statemachineid,
+  state.id AS state_id,
+  channelId,
+  updatedAt,
+  updatedTimestamp
+FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates
+LEFT JOIN UNNEST(ids)
+WHERE updatedTimestamp >= '2025-09-22 00:00:00+00';
+
+-- Step 8: Filter for main state updates
 CREATE TEMP TABLE temp_cm_event_state_updates AS
 SELECT
   identifier,
@@ -108,39 +157,35 @@ FROM (
   SELECT
     *,
     ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY updatedAt DESC) AS rownum
-  FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates
-  LEFT JOIN UNNEST(ids)
+  FROM temp_cm_event_state_updates_raw
   WHERE
-    updatedTimestamp >= '2025-09-22 00:00:00+00'
-    AND LOWER(state.id) NOT IN ("closed")
+    LOWER(state_id) NOT IN ("closed")
     AND LOWER(channelId) IN ("transfers")
     AND LOWER(statemachineid) NOT IN ('breach_status', 'decision', 'status_digital_activity', 
                                        'status_transfers', 'transfer_status', 'operational_status')
 )
 WHERE rownum = 1;
 
--- Step 6: Create temp table for cm_event_state_updates_status
+-- Step 9: Filter for status state updates
 CREATE TEMP TABLE temp_cm_event_state_updates_status AS
 SELECT
   identifier,
-  state.id AS state_id,
+  state_id,
   updatedAt,
   updatedTimestamp
 FROM (
   SELECT
     *,
     ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY updatedAt DESC) AS rownum
-  FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates
-  LEFT JOIN UNNEST(ids)
+  FROM temp_cm_event_state_updates_raw
   WHERE
     LOWER(stateMachineId) = 'status'
     AND TIMESTAMP_MILLIS(updatedAt) >= '2025-09-22 00:00:00+00'
-    AND updatedTimestamp >= '2025-09-22 00:00:00+00'
     AND TIMESTAMP_MILLIS(updatedAt) < '2025-10-06 16:00:00+00'
 )
 WHERE rownum = 1;
 
--- Step 7: Create temp table for cm_event_assignee_update
+-- Step 10: Create temp table for cm_event_assignee_update (query table once)
 CREATE TEMP TABLE temp_cm_event_assignee_update AS
 SELECT
   identifier,
@@ -148,7 +193,9 @@ SELECT
   updatedTimestamp
 FROM (
   SELECT
-    *,
+    identifier,
+    updatedAt,
+    updatedTimestamp,
     ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY updatedAt DESC) AS rownum
   FROM AMH_FZ_FDR_DEV_SIT.cm_event_assignee_update
   LEFT JOIN UNNEST(ids)
@@ -156,7 +203,7 @@ FROM (
 )
 WHERE rownum = 1;
 
--- Step 8: Create temp table for cm_event_queue_changed
+-- Step 11: Create temp table for cm_event_queue_changed (query table once)
 CREATE TEMP TABLE temp_cm_event_queue_changed AS
 SELECT
   identifier,
@@ -172,31 +219,26 @@ FROM (
 )
 WHERE rownum = 1;
 
--- Step 9: Create temp table for rules aggregation
+-- Step 12: Create temp table for workflow_rules_vw (query table once)
+CREATE TEMP TABLE temp_workflow_rules AS
+SELECT id, name
+FROM AMH_FZ_FDR_DEV_SIT.workflow_rules_vw;
+
+-- Step 13: Create temp table for rules aggregation (using pre-filtered data)
 CREATE TEMP TABLE temp_rules AS
 SELECT
   event_store_rule.lifecycle_id,
   STRING_AGG(rules_metadata.name) AS rule_metadata_names
 FROM (
   SELECT
-    event_store.lifecycle_id,
+    es.lifecycle_id,
     TRIM(rules_split) AS rules_triggered
   FROM (
     SELECT
-      id.identifier,
-      id.timestamp,
-      updatedTimestamp
-    FROM (
-      SELECT
-        *,
-        ROW_NUMBER() OVER(PARTITION BY id.identifier ORDER BY TIMESTAMP(timestamp) ASC) AS rownum
-      FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival
-      WHERE
-        LOWER(id.payload.schema.event_type) IN ('transfer_initiation', 'feedback', 'info')
-        AND updatedTimestamp >= TIMESTAMP('2025-09-22 00:00:00+00')
-        AND updatedTimestamp < TIMESTAMP('2025-10-06 16:00:00+00')
-    )
-    WHERE rownum = 1
+      identifier,
+      ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY TIMESTAMP(event_timestamp) ASC) AS rownum
+    FROM temp_cm_event_arrival_raw
+    WHERE LOWER(event_type) IN ('transfer_initiation', 'feedback', 'info')
   ) cm_event_arrival
   INNER JOIN (
     SELECT
@@ -204,26 +246,23 @@ FROM (
       rules_split
     FROM (
       SELECT
-        *,
+        lifecycle_id,
+        rules_split,
         ROW_NUMBER() OVER(PARTITION BY lifecycle_id ORDER BY event_occurred_at DESC) AS row_num
-      FROM AMH_FZ_FDR_DEV_SIT.event_store
+      FROM temp_event_store_raw
       LEFT JOIN UNNEST(SPLIT(rules_triggered, ';')) AS rules_split
-      WHERE
-        bq_insert_timestamp >= '2025-09-22 00:00:00+00'
-        AND LOWER(event_type) IN ('transfer_initiation', 'feedback')
+      WHERE LOWER(event_type) IN ('transfer_initiation', 'feedback')
     )
     WHERE row_num = 1
-  ) event_store
-  ON cm_event_arrival.identifier = event_store.lifecycle_id
+  ) es
+  ON cm_event_arrival.identifier = es.lifecycle_id
+  WHERE cm_event_arrival.rownum = 1
 ) event_store_rule
-INNER JOIN (
-  SELECT id, name
-  FROM AMH_FZ_FDR_DEV_SIT.workflow_rules_vw
-) rules_metadata
+INNER JOIN temp_workflow_rules rules_metadata
 ON event_store_rule.rules_triggered = rules_metadata.id
 GROUP BY event_store_rule.lifecycle_id;
 
--- Step 10: Final INSERT query using temp tables
+-- Step 14: Final INSERT query using temp tables
 INSERT INTO AMH_FZ_REPORT_MARTS_TABLES_DEV.Payment_Mart (
   report_name,
   create_timestamp,
