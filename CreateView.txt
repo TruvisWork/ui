@@ -1,52 +1,36 @@
-package com.calcite_new.sql;
+Subject: BigQuery Cost-Optimization Findings – Partition & Query Efficiency Improvements
 
-import org.apache.calcite.sql.*;
-import org.apache.calcite.sql.parser.SqlParserPos;
+Hi <Client Name>,
 
-import java.util.List;
+As part of our ongoing review to identify BigQuery cost-reduction opportunities, we analyzed high-scanning queries in the development and production environments. Below are two key findings that highlight immediate areas where cost and performance can be improved without changing any business logic or output.
 
-public class SqlCreateView extends SqlCreate {
-    private final SqlIdentifier name;
-    private final SqlNodeList columnList;
-    private final SqlNode query;
+1. Missing Partition Filter in PAYMENT_MART_PAYMENT_MI Query
 
-    public SqlCreateView(SqlParserPos pos, boolean replace, boolean ifNotExists,
-                         SqlIdentifier name, SqlNodeList columnList, SqlNode query) {
-        super(new SqlSpecialOperator("CREATE VIEW", SqlKind.CREATE_VIEW), pos, replace, ifNotExists);
-        this.name = name;
-        this.columnList = columnList;
-        this.query = query;
-    }
+During review of the PAYMENT_MART_PAYMENT_MI process, we identified a query that was scanning approximately 3.5 GB of data. The query was not filtering on the table’s partition column, which caused unnecessary full-table scans.
 
-    @Override
-    public SqlOperator getOperator() {
-        return new SqlSpecialOperator("CREATE VIEW", SqlKind.CREATE_VIEW);
-    }
+After adding the appropriate partition filter, the query produced the same result while reducing the scanned volume to under 1 GB.
+This directly lowers recurring on-demand processing cost and improves runtime.
 
-    @Override
-    public List<SqlNode> getOperandList() {
-        return List.of(name, columnList, query);
-    }
+(Screenshots attached – before & after scan size)
 
-    @Override
-    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-        writer.keyword("CREATE");
-        if (getReplace()) writer.keyword("OR REPLACE");
-        writer.keyword("VIEW");
-        if (ifNotExists) writer.keyword("IF NOT EXISTS");
-        name.unparse(writer, 0, 0);
-        if (columnList != null && !columnList.isEmpty()) {
-            writer.print("(");
-            columnList.unparse(writer, 0, 0);
-            writer.print(")");
-        }
-        if (query != null) {
-            writer.keyword("AS\n");
-            query.unparse(writer, 0, 0);
-        }
-    }
+2. Demonstration of Cost Benefit: Partitioned vs Non-Partitioned Tables
 
-    public SqlIdentifier getName() { return name; }
-    public SqlNodeList getColumnList() { return columnList; }
-    public SqlNode getQuery() { return query; }
-}
+In production, there is a daily delete operation that scans 8 TB+ each run because the table is not partitioned on the load_datetime column—despite this column being used as the filter in the delete condition.
+
+To demonstrate the optimization potential, we created two sample tables (~30 GB each) in the development environment:
+
+es2 (non-partitioned) – deleting with date filter scanned the entire ~30 GB
+
+es1 (partitioned on the date column) – the same delete condition scanned 0 bytes
+
+Both tables contain identical data; the only difference is partitioning.
+This clearly shows the potential cost reduction if production tables adopt a similar partitioning strategy.
+
+(Screenshots attached – es1 vs es2 scan details)
+
+These findings illustrate the tangible cost benefits of ensuring queries use partition columns and of aligning table structure (e.g., partitioning on load_datetime) with how queries filter data. Applying these optimizations to production will significantly reduce scan volumes and recurring processing cost.
+
+I’ve attached all supporting screenshots, including the production query reference.
+
+Regards,
+<Your Name>
