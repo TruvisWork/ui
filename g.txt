@@ -27,22 +27,41 @@ stage('Install Gradle') {
                         passwordVariable: 'NEXUS_TOKEN'
                     )
                 ]) {
-                    // Create temporary directory
-                    sh "cd /tmp"
-                    
-                    // Download Gradle from Nexus
-                    sh """
-                        curl https://\${NEXUS_USER}:\${NEXUS_TOKEN}@nexus305.systems.uk.hsbc:8081/nexus/repository/maven-hsbc-internal_prod_nsp/com/hsbc/mss/qds/gradle/\${gradleVersion}/gradle-\${gradleVersion}.zip -o temp.zip
-                    """
-                    
-                    // Unzip the file
-                    sh "unzip temp.zip"
-                    
-                    // Move to the correct location
-                    sh "mv gradle-${gradleVersion} ${gradleVersion}"
-                    sh "mv ${gradleVersion} ${toolPath}/gradle/"
-                    
-                    echo "Gradle ${gradleVersion} installed successfully at ${gradleHome}"
+                    try {
+                        // Change to /tmp directory
+                        echo "Changing to /tmp directory"
+                        sh "cd /tmp && pwd"
+                        
+                        // Download Gradle from Nexus
+                        echo "Downloading Gradle ${gradleVersion} from Nexus..."
+                        sh """
+                            cd /tmp
+                            curl -v https://\${NEXUS_USER}:\${NEXUS_TOKEN}@nexus305.systems.uk.hsbc:8081/nexus/repository/maven-hsbc-internal_prod_nsp/com/hsbc/mss/qds/gradle/${gradleVersion}/gradle-${gradleVersion}.zip -o temp.zip
+                        """
+                        
+                        echo "Download complete. Checking file..."
+                        sh "cd /tmp && ls -lh temp.zip"
+                        
+                        // Unzip the file
+                        echo "Unzipping Gradle archive..."
+                        sh "cd /tmp && unzip -q temp.zip"
+                        
+                        echo "Creating directory structure if needed..."
+                        sh "mkdir -p ${toolPath}/gradle"
+                        
+                        // Move to the correct location
+                        echo "Moving Gradle to ${toolPath}/gradle/"
+                        sh "cd /tmp && mv gradle-${gradleVersion} ${gradleVersion}"
+                        sh "cd /tmp && mv ${gradleVersion} ${toolPath}/gradle/"
+                        
+                        // Clean up
+                        echo "Cleaning up temporary files..."
+                        sh "cd /tmp && rm -f temp.zip"
+                        
+                        echo "Gradle ${gradleVersion} installed successfully at ${gradleHome}"
+                    } catch (Exception e) {
+                        error "Failed to install Gradle: ${e.message}"
+                    }
                 }
             }
             
@@ -53,7 +72,7 @@ stage('Install Gradle') {
             
             // Update remote cache
             echo "Updating Remote Cache"
-            sh "find \$HOME/.gradle/caches/ -name \\"*.lock\\" -type f -delete || true"
+            sh "find \$HOME/.gradle/caches/ -name '*.lock' -type f -delete || true"
             sh "rsync -au \$HOME/.gradle/caches ${gradleCachePath}/ || true"
             echo "Updated Remote Cache"
             
