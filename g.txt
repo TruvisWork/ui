@@ -10,8 +10,6 @@ stage('Install Gradle') {
             def gradleExtractedDir = "gradle-" + gradleVersion
             def gradleTargetDir = toolPath + "/gradle/" + gradleVersion
             def fileUrl = "https://nexus305.systems.uk.hsbc:8081/nexus/repository/maven-hsbc-internal_prod_nsp/com/hsbc/mss/qds/gradle/" + gradleVersion + "/gradle-" + gradleVersion + ".zip"
-            def homeGradlePath = "\$HOME/.gradle"
-            def cachePattern = "*.lock"
             
             echo "Installing Gradle " + gradleVersion
             
@@ -66,13 +64,13 @@ stage('Install Gradle') {
             
             // Update local cache
             echo "Updating Local Cache"
-            sh 'rsync -a --include /caches --exclude "/*" ' + gradleCachePath + '/ ' + homeGradlePath + ' || true'
+            sh 'rsync -a --include /caches --exclude "/*" ' + gradleCachePath + '/ $HOME/.gradle || true'
             echo "Updated Local Cache"
             
             // Update remote cache
             echo "Updating Remote Cache"
-            sh 'find ' + homeGradlePath + '/caches/ -name "' + cachePattern + '" -type f -delete || true'
-            sh 'rsync -au ' + homeGradlePath + '/caches ' + gradleCachePath + '/ || true'
+            sh 'find $HOME/.gradle/caches/ -name "*.lock" -type f -delete || true'
+            sh 'rsync -au $HOME/.gradle/caches ' + gradleCachePath + '/ || true'
             echo "Updated Remote Cache"
             
             // Clean up old cache files (older than 14 days)
