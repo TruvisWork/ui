@@ -1,107 +1,45 @@
-package com.hsbc.sp.jenkins
+stage('Install Java & Gradle') {
+    steps {
+        script {
 
-class GradleInstaller implements Serializable {
+            // ======================
+            // Java Installation
+            // ======================
+            echo "Installing Java..."
+            sh """
+                sudo apt-get update -y
+                sudo apt-get install -y curl unzip tar
 
-    private def steps
-    private String credentialsId
-    private String gradleVersion
-    private String javaVersion
-
-    GradleInstaller(def steps, String credentialsId,
-                    String gradleVersion, String javaVersion) {
-        this.steps = steps
-        this.credentialsId = credentialsId
-        this.gradleVersion = gradleVersion
-        this.javaVersion = javaVersion
-    }
-
-    void installTools() {
-        steps.echo "Starting Java & Gradle installation..."
-
-        steps.sh "mkdir -p tools/java tools/gradle"
-
-        installJava()
-        installGradle()
-        setupEnvironment()
-
-        steps.echo "Java & Gradle installation complete"
-    }
-
-    private void installJava() {
-        steps.withCredentials([
-            steps.usernamePassword(credentialsId: credentialsId,
-                usernameVariable: 'NEXUS_USER',
-                passwordVariable: 'NEXUS_TOKEN')
-        ]) {
-            steps.sh """
-                echo "Downloading Java..."
-                cd tools/java
-                curl -L -u $NEXUS_USER:$NEXUS_TOKEN \
-                    "https://nexus.example.com/java/${javaVersion}.tar.gz" \
-                    -o java.tar.gz
-                tar -xzf java.tar.gz
+                # Install JDK 17
+                curl -L -o /tmp/jdk.tar.gz https://download.oracle.com/java/17/latest/jdk-17_linux-x64_bin.tar.gz
+                sudo mkdir -p /opt/java
+                sudo tar -xzf /tmp/jdk.tar.gz -C /opt/java
+                JAVA_DIR=\$(ls /opt/java)
+                echo "export JAVA_HOME=/opt/java/\$JAVA_DIR" | sudo tee -a /etc/profile
+                echo "export PATH=\\$JAVA_HOME/bin:\\$PATH" | sudo tee -a /etc/profile
             """
-        }
-    }
 
-    private void installGradle() {
-        steps.withCredentials([
-            steps.usernamePassword(credentialsId: credentialsId,
-                usernameVariable: 'NEXUS_USER',
-                passwordVariable: 'NEXUS_TOKEN')
-        ]) {
-            steps.sh """
-                echo "Downloading Gradle..."
-                cd tools/gradle
-                curl -L -u $NEXUS_USER:$NEXUS_TOKEN \
-                    "https://nexus.example.com/gradle/gradle-${gradleVersion}-all.zip" \
-                    -o gradle.zip
-                unzip -o gradle.zip
+            // Reload PATH
+            sh ". /etc/profile && java -version"
+
+
+            // ======================
+            // Gradle Installation
+            // ======================
+            echo "Installing Gradle..."
+            sh """
+                GRADLE_VERSION=8.3
+                wget https://services.gradle.org/distributions/gradle-\$GRADLE_VERSION-bin.zip -P /tmp
+                sudo unzip -d /opt/gradle /tmp/gradle-\$GRADLE_VERSION-bin.zip
+
+                echo "export GRADLE_HOME=/opt/gradle/gradle-\$GRADLE_VERSION" | sudo tee -a /etc/profile
+                echo "export PATH=\\$GRADLE_HOME/bin:\\$PATH" | sudo tee -a /etc/profile
             """
-        }
-    }
 
-    private void setupEnvironment() {
-        steps.sh """
-            export JAVA_HOME=\$PWD/tools/java/jdk-${javaVersion}
-            export GRADLE_HOME=\$PWD/tools/gradle/gradle-${gradleVersion}
-            export PATH=\$JAVA_HOME/bin:\$GRADLE_HOME/bin:\$PATH
+            // Reload PATH
+            sh ". /etc/profile && gradle -v"
 
-            echo "JAVA_HOME set to: \$JAVA_HOME"
-            echo "GRADLE_HOME set to: \$GRADLE_HOME"
-
-            java -version
-            gradle --version
-        """
-    }
-}
-
-@Library('my-shared-library') _
-
-pipeline {
-    agent any
-
-    stages {
-        stage("Install Tools") {
-            steps {
-                script {
-                    def installer = new com.hsbc.sp.jenkins.GradleInstaller(
-                        this,
-                        "nexus-creds",
-                        "8.3",             // Gradle Version
-                        "17.0.2"          // Java JDK Version
-                    )
-                    installer.installTools()
-                }
-            }
-        }
-
-        stage("Build") {
-            steps {
-                script {
-                    sh "gradle clean build --info"
-                }
-            }
+            echo "Java & Gradle installation completed!"
         }
     }
 }
