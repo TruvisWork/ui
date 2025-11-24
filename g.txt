@@ -1,0 +1,107 @@
+package com.hsbc.sp.jenkins
+
+class GradleInstaller implements Serializable {
+
+    private def steps
+    private String credentialsId
+    private String gradleVersion
+    private String javaVersion
+
+    GradleInstaller(def steps, String credentialsId,
+                    String gradleVersion, String javaVersion) {
+        this.steps = steps
+        this.credentialsId = credentialsId
+        this.gradleVersion = gradleVersion
+        this.javaVersion = javaVersion
+    }
+
+    void installTools() {
+        steps.echo "Starting Java & Gradle installation..."
+
+        steps.sh "mkdir -p tools/java tools/gradle"
+
+        installJava()
+        installGradle()
+        setupEnvironment()
+
+        steps.echo "Java & Gradle installation complete"
+    }
+
+    private void installJava() {
+        steps.withCredentials([
+            steps.usernamePassword(credentialsId: credentialsId,
+                usernameVariable: 'NEXUS_USER',
+                passwordVariable: 'NEXUS_TOKEN')
+        ]) {
+            steps.sh """
+                echo "Downloading Java..."
+                cd tools/java
+                curl -L -u $NEXUS_USER:$NEXUS_TOKEN \
+                    "https://nexus.example.com/java/${javaVersion}.tar.gz" \
+                    -o java.tar.gz
+                tar -xzf java.tar.gz
+            """
+        }
+    }
+
+    private void installGradle() {
+        steps.withCredentials([
+            steps.usernamePassword(credentialsId: credentialsId,
+                usernameVariable: 'NEXUS_USER',
+                passwordVariable: 'NEXUS_TOKEN')
+        ]) {
+            steps.sh """
+                echo "Downloading Gradle..."
+                cd tools/gradle
+                curl -L -u $NEXUS_USER:$NEXUS_TOKEN \
+                    "https://nexus.example.com/gradle/gradle-${gradleVersion}-all.zip" \
+                    -o gradle.zip
+                unzip -o gradle.zip
+            """
+        }
+    }
+
+    private void setupEnvironment() {
+        steps.sh """
+            export JAVA_HOME=\$PWD/tools/java/jdk-${javaVersion}
+            export GRADLE_HOME=\$PWD/tools/gradle/gradle-${gradleVersion}
+            export PATH=\$JAVA_HOME/bin:\$GRADLE_HOME/bin:\$PATH
+
+            echo "JAVA_HOME set to: \$JAVA_HOME"
+            echo "GRADLE_HOME set to: \$GRADLE_HOME"
+
+            java -version
+            gradle --version
+        """
+    }
+}
+
+@Library('my-shared-library') _
+
+pipeline {
+    agent any
+
+    stages {
+        stage("Install Tools") {
+            steps {
+                script {
+                    def installer = new com.hsbc.sp.jenkins.GradleInstaller(
+                        this,
+                        "nexus-creds",
+                        "8.3",             // Gradle Version
+                        "17.0.2"          // Java JDK Version
+                    )
+                    installer.installTools()
+                }
+            }
+        }
+
+        stage("Build") {
+            steps {
+                script {
+                    sh "gradle clean build --info"
+                }
+            }
+        }
+    }
+}
