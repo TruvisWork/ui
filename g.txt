@@ -1,45 +1,18 @@
-stage('Install Java & Gradle') {
+stage("Install Gradle") {
     steps {
         script {
+            sh '''
+            mkdir -p /opt/gradle
+            curl -u $NEXUS_USER:$NEXUS_PASS \
+              -o /opt/gradle/gradle-8.3.zip \
+              "https://nexus.***.com/repository/tools/gradle/8.3/gradle-8.3.zip"
 
-            // ======================
-            // Java Installation
-            // ======================
-            echo "Installing Java..."
-            sh """
-                sudo apt-get update -y
-                sudo apt-get install -y curl unzip tar
+            unzip -qo /opt/gradle/gradle-8.3.zip -d /opt/gradle
+            export GRADLE_HOME=/opt/gradle/gradle-8.3
+            export PATH=$GRADLE_HOME/bin:$PATH
 
-                # Install JDK 17
-                curl -L -o /tmp/jdk.tar.gz https://download.oracle.com/java/17/latest/jdk-17_linux-x64_bin.tar.gz
-                sudo mkdir -p /opt/java
-                sudo tar -xzf /tmp/jdk.tar.gz -C /opt/java
-                JAVA_DIR=\$(ls /opt/java)
-                echo "export JAVA_HOME=/opt/java/\$JAVA_DIR" | sudo tee -a /etc/profile
-                echo "export PATH=\\$JAVA_HOME/bin:\\$PATH" | sudo tee -a /etc/profile
-            """
-
-            // Reload PATH
-            sh ". /etc/profile && java -version"
-
-
-            // ======================
-            // Gradle Installation
-            // ======================
-            echo "Installing Gradle..."
-            sh """
-                GRADLE_VERSION=8.3
-                wget https://services.gradle.org/distributions/gradle-\$GRADLE_VERSION-bin.zip -P /tmp
-                sudo unzip -d /opt/gradle /tmp/gradle-\$GRADLE_VERSION-bin.zip
-
-                echo "export GRADLE_HOME=/opt/gradle/gradle-\$GRADLE_VERSION" | sudo tee -a /etc/profile
-                echo "export PATH=\\$GRADLE_HOME/bin:\\$PATH" | sudo tee -a /etc/profile
-            """
-
-            // Reload PATH
-            sh ". /etc/profile && gradle -v"
-
-            echo "Java & Gradle installation completed!"
+            gradle -v
+            '''
         }
     }
 }
