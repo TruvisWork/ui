@@ -1,21 +1,14 @@
+import json
 import os
-import argparse
-import logging
-import sys
-from google.cloud import bigquery
-from google.oauth2 import service_account
-from datetime import datetime
-import yaml
-import re
-import traceback
+import pandas as pd
+import numpy as np
+import sqlalchemy
+from sqlalchemy import create_engine
 import configparser
 import argparse
-import pandas as pd
-import json
-import pyarrow as pa
-import pyarrow.parquet as pq
+from urllib.parse import quote_plus
 
-def load_config():
+def resolve_config_path():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config-path', default=None)
     args, _ = parser.parse_known_args()  
@@ -32,396 +25,243 @@ def load_config():
 
     return config_path
 
-def get_creds():
-    """Get BigQuery project, region, dataset(s), output_dir information from config"""
-    config_path = load_config()
+def get_postgres_config():
+    """Get PostgreSQL connection details from config"""
     config = configparser.ConfigParser()
+    config_path = resolve_config_path()
+    print(f"Reading config from: {config_path}")
     config.read(config_path)
-    try:
-        section = 'extraction_utility'
-        project_id = config.get(section, 'project_id')
-        region = config.get(section, 'region')
-        dataset_id = config.get(section, 'dataset_id').strip()
-        service_account_file = config.get(section, 'service_account_file')
-        output_dir = config.get(section, 'data_output_directory')
-
-        credentials = service_account.Credentials.from_service_account_file(service_account_file)
-        client = bigquery.Client(credentials=credentials, project=project_id)
-
-        # If dataset_id is empty, fetch all datasets in the project
-        if not dataset_id:
-            datasets = [d.dataset_id for d in client.list_datasets(project=project_id)]
-        else:
-            # Split by comma and strip whitespace
-            datasets = [d.strip() for d in dataset_id.split(',') if d.strip()]
-        section = 'extraction_utility_logs'
-        days= config.get(section, 'days')
-        return client, project_id, region, datasets, output_dir, days
-    except configparser.NoOptionError as e:
-        raise ValueError(f"Missing configuration option: {e}")
-
-def setup_logging(verbose):
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=level)
-
-def load_queries(filepath):
-    try:
-        with open(filepath, 'r') as file:
-            return yaml.safe_load(file)
-    except yaml.YAMLError as e:
-        logging.error(f"Error loading queries from {filepath}: {e}")
-        raise ValueError(f"Invalid YAML file: {filepath}")
-
-def calculate_cost(bytes_processed):
-    """
-    Calculate BigQuery cost based on bytes processed
-    On-demand pricing: $5 per TB (as of 2024)
-    """
-    if bytes_processed is None or bytes_processed == 0:
-        return 0
     
-    tb_processed = bytes_processed / (1024**4)  # Convert bytes to TB
-    cost_usd = tb_processed * 5  # $5 per TB
-    return cost_usd
+    section = 'postgres_standard'
+    host = config.get(section, 'host')
+    port = config.get(section, 'port', fallback='5432')
+    database = config.get(section, 'database')
+    user = config.get(section, 'user')
+    password = config.get(section, 'password')
+    schema = config.get(section, 'schema')
+    input_dir = config.get('extraction_utility', 'data_output_directory')
+    
+    print(f"DEBUG - Host read from config: '{host}'")
+    print(f"DEBUG - Database: '{database}'")
+    print(f"DEBUG - User: '{user}'")
+    print(f"DEBUG - Schema: '{schema}'")
+    
+    return host, port, database, user, password, schema, input_dir
 
-def run_query_with_cost_logging(client, query, query_name="unknown"):
-    """Run query and return dataframe along with cost information"""
-    try:
-        # Configure job to get detailed statistics
-        job_config = bigquery.QueryJobConfig(
-            use_query_cache=False,  # Set to True if you want to use cache
-            dry_run=False
-        )
-        
-        # Execute the query
-        query_job = client.query(query, job_config=job_config)
-        
-        # Get the results
-        df = query_job.to_dataframe()
-        
-        # Get job statistics
-        job_stats = query_job._properties.get('statistics', {})
-        query_stats = job_stats.get('query', {})
-        
-        # Extract cost-related information
-        bytes_processed = query_stats.get('totalBytesProcessed')
-        bytes_billed = query_stats.get('totalBytesBilled')
-        slot_ms = query_stats.get('totalSlotMs')
-        cache_hit = query_stats.get('cacheHit', False)
-        
-        # Calculate cost
-        cost = calculate_cost(int(bytes_processed)) if bytes_processed else 0
-        
-        # Create cost information dictionary
-        cost_info = {
-            'timestamp': datetime.now().isoformat(),
-            'query_name': query_name,
-            'job_id': query_job.job_id,
-            'bytes_processed': int(bytes_processed) if bytes_processed else 0,
-            'bytes_billed': int(bytes_billed) if bytes_billed else 0,
-            'slot_ms': int(slot_ms) if slot_ms else 0,
-            'cache_hit': cache_hit,
-            'estimated_cost_usd': round(cost, 6),
-            'row_count': len(df)
-        }
-        
-        # Log the cost information
-        logging.info(f"Query {query_name} completed:")
-        logging.info(f"  - Job ID: {query_job.job_id}")
-        logging.info(f"  - Bytes processed: {cost_info['bytes_processed']:,}")
-        logging.info(f"  - Bytes billed: {cost_info['bytes_billed']:,}")
-        logging.info(f"  - Estimated cost: ${cost_info['estimated_cost_usd']:.6f}")
-        logging.info(f"  - Cache hit: {cost_info['cache_hit']}")
-        logging.info(f"  - Rows returned: {cost_info['row_count']:,}")
-        
-        return df, cost_info
-        
-    except Exception as e:
-        logging.error(f"Error running query {query_name}: {e}")
-        raise
+# --- Config ---
+host, port, database, user, password, schema, parquet_folder = get_postgres_config()
 
-def get_schema_for_table(table_name):
-    """Get PyArrow schema based on BigQuery INFORMATION_SCHEMA table structure"""
-    schemas = {
-        'SCHEMATA': pa.schema([
-            ('catalog_name', pa.string()),
-            ('schema_name', pa.string()),
-            ('schema_owner', pa.string()),
-            ('creation_time', pa.timestamp('us', tz='UTC')),
-            ('last_modified_time', pa.timestamp('us', tz='UTC')),
-            ('location', pa.string())
-        ]),
-        'JOBS_BY_PROJECT': pa.schema([
-            ('creation_time', pa.timestamp('us', tz='UTC')),
-            ('project_id', pa.string()),
-            ('project_number', pa.int64()),
-            ('user_email', pa.string()),
-            ('job_id', pa.string()),
-            ('job_type', pa.string()),
-            ('parent_job_id', pa.string()),
-            ('session_info', pa.string()),
-            ('statement_type', pa.string()),
-            ('start_time', pa.timestamp('us', tz='UTC')),
-            ('end_time', pa.timestamp('us', tz='UTC')),
-            ('query', pa.string()),
-            ('state', pa.string()),
-            ('reservation_id', pa.string()),
-            ('total_bytes_processed', pa.int64()),
-            ('total_slot_ms', pa.int64()),
-            ('total_modified_partitions', pa.int64()),
-            ('total_bytes_billed', pa.int64()),
-            ('error_result_reason', pa.string()),
-            ('error_result_location', pa.string()),
-            ('error_result_debug_info', pa.string()),
-            ('error_result_message', pa.string()),
-            ('cache_hit', pa.bool_()),
-            ('destination_project_id', pa.string()),
-            ('destination_dataset_id', pa.string()),
-            ('destination_table_id', pa.string()),
-            ('referenced_tables', pa.string()),
-            ('labels', pa.string()),
-            ('timeline', pa.string()),
-            ('job_stages', pa.string())
-        ]),
-        'ROUTINES': pa.schema([
-            ('SPECIFIC_CATALOG', pa.string()),
-            ('SPECIFIC_SCHEMA', pa.string()),
-            ('SPECIFIC_NAME', pa.string()),
-            ('ROUTINE_CATALOG', pa.string()),
-            ('ROUTINE_SCHEMA', pa.string()),
-            ('ROUTINE_NAME', pa.string()),
-            ('ROUTINE_TYPE', pa.string()),
-            ('DATA_TYPE', pa.string()),
-            ('ROUTINE_BODY', pa.string()),
-            ('ROUTINE_DEFINITION', pa.string()),
-            ('EXTERNAL_LANGUAGE', pa.string()),
-            ('IS_DETERMINISTIC', pa.string()),
-            ('SECURITY_TYPE', pa.string()),
-            ('CREATED', pa.timestamp('us', tz='UTC')),
-            ('LAST_ALTERED', pa.timestamp('us', tz='UTC')),
-            ('DDL', pa.string())
-        ]),
-        'COLUMNS': pa.schema([
-            ('TABLE_CATALOG', pa.string()),
-            ('TABLE_SCHEMA', pa.string()),
-            ('TABLE_NAME', pa.string()),
-            ('COLUMN_NAME', pa.string()),
-            ('ORDINAL_POSITION', pa.int32()),
-            ('IS_NULLABLE', pa.string()),
-            ('DATA_TYPE', pa.string()),
-            ('IS_GENERATED', pa.string()),
-            ('GENERATION_EXPRESSION', pa.string()),
-            ('IS_STORED', pa.string()),
-            ('IS_HIDDEN', pa.string()),
-            ('IS_UPDATABLE', pa.string()),
-            ('IS_SYSTEM_DEFINED', pa.string()),
-            ('IS_PARTITIONING_COLUMN', pa.string()),
-            ('CLUSTERING_ORDINAL_POSITION', pa.int32())
-        ]),
-        'VIEWS': pa.schema([
-            ('TABLE_CATALOG', pa.string()),
-            ('TABLE_SCHEMA', pa.string()),
-            ('TABLE_NAME', pa.string()),
-            ('VIEW_DEFINITION', pa.string()),
-            ('CHECK_OPTION', pa.string()),
-            ('USE_STANDARD_SQL', pa.string())
-        ]),
-        'TABLES__': pa.schema([
-            ('project_id', pa.string()),
-            ('dataset_id', pa.string()),
-            ('table_id', pa.string()),
-            ('creation_time', pa.int64()),
-            ('last_modified_time', pa.int64()),
-            ('row_count', pa.int64()),
-            ('size_bytes', pa.int64()),
-            ('type', pa.string())
-        ]),
-        'TABLES': pa.schema([
-            ('TABLE_CATALOG', pa.string()),
-            ('TABLE_SCHEMA', pa.string()),
-            ('TABLE_NAME', pa.string()),
-            ('TABLE_TYPE', pa.string()),
-            ('IS_INSERTABLE_INTO', pa.string()),
-            ('IS_TYPED', pa.string()),
-            ('CREATION_TIME', pa.timestamp('us', tz='UTC')),
-            ('DDL', pa.string())
-        ])
+# URL encode password to handle special characters like @
+encoded_password = quote_plus(password)
+
+# Create PostgreSQL connection string
+connection_string = f"postgresql://{user}:{encoded_password}@{host}:{port}/{database}"
+engine = create_engine(connection_string)
+
+# --- Function to ensure table name length limit ---
+def get_safe_table_name(file_name):
+    # Remove extension like .parquet if present
+    file_name = file_name.replace('.parquet', '')
+
+    # Split on underscores
+    parts = file_name.split('.')
+    base_name = parts[0]  # Remove any file extension if present
+    
+    return base_name
+
+def get_table_ddl(table_name, schema_name):
+    """Get DDL for creating tables based on BigQuery INFORMATION_SCHEMA structure
+    Mapping: BQ STRING->TEXT, BQ INTEGER->INTEGER, BQ BOOL->BOOLEAN, 
+             BQ TIMESTAMP->TIMESTAMPTZ, BQ RECORD/ARRAY->JSONB"""
+    ddl_definitions = {
+        'SCHEMATA': f'''
+            CREATE TABLE IF NOT EXISTS "{schema_name}"."SCHEMATA" (
+                catalog_name TEXT,
+                schema_name TEXT,
+                schema_owner TEXT,
+                creation_time TIMESTAMPTZ,
+                last_modified_time TIMESTAMPTZ,
+                location TEXT
+            );
+        ''',
+        'JOBS_BY_PROJECT': f'''
+            CREATE TABLE IF NOT EXISTS "{schema_name}"."JOBS_BY_PROJECT" (
+                creation_time TIMESTAMPTZ,
+                project_id TEXT,
+                project_number BIGINT,
+                user_email TEXT,
+                job_id TEXT,
+                job_type TEXT,
+                parent_job_id TEXT,
+                session_info TEXT,
+                statement_type TEXT,
+                start_time TIMESTAMPTZ,
+                end_time TIMESTAMPTZ,
+                query TEXT,
+                state TEXT,
+                reservation_id TEXT,
+                total_bytes_processed BIGINT,
+                total_slot_ms BIGINT,
+                total_modified_partitions BIGINT,
+                total_bytes_billed BIGINT,
+                error_result_reason TEXT,
+                error_result_location TEXT,
+                error_result_debug_info TEXT,
+                error_result_message TEXT,
+                cache_hit BOOLEAN,
+                destination_project_id TEXT,
+                destination_dataset_id TEXT,
+                destination_table_id TEXT,
+                referenced_tables JSONB,
+                labels JSONB,
+                timeline JSONB,
+                job_stages JSONB
+            );
+        ''',
+        'ROUTINES': f'''
+            CREATE TABLE IF NOT EXISTS "{schema_name}"."ROUTINES" (
+                "SPECIFIC_CATALOG" TEXT,
+                "SPECIFIC_SCHEMA" TEXT,
+                "SPECIFIC_NAME" TEXT,
+                "ROUTINE_CATALOG" TEXT,
+                "ROUTINE_SCHEMA" TEXT,
+                "ROUTINE_NAME" TEXT,
+                "ROUTINE_TYPE" TEXT,
+                "DATA_TYPE" TEXT,
+                "ROUTINE_BODY" TEXT,
+                "ROUTINE_DEFINITION" TEXT,
+                "EXTERNAL_LANGUAGE" TEXT,
+                "IS_DETERMINISTIC" TEXT,
+                "SECURITY_TYPE" TEXT,
+                "CREATED" TIMESTAMPTZ,
+                "LAST_ALTERED" TIMESTAMPTZ,
+                "DDL" TEXT
+            );
+        ''',
+        'COLUMNS': f'''
+            CREATE TABLE IF NOT EXISTS "{schema_name}"."COLUMNS" (
+                "TABLE_CATALOG" TEXT,
+                "TABLE_SCHEMA" TEXT,
+                "TABLE_NAME" TEXT,
+                "COLUMN_NAME" TEXT,
+                "ORDINAL_POSITION" INTEGER,
+                "IS_NULLABLE" TEXT,
+                "DATA_TYPE" TEXT,
+                "IS_GENERATED" TEXT,
+                "GENERATION_EXPRESSION" TEXT,
+                "IS_STORED" TEXT,
+                "IS_HIDDEN" TEXT,
+                "IS_UPDATABLE" TEXT,
+                "IS_SYSTEM_DEFINED" TEXT,
+                "IS_PARTITIONING_COLUMN" TEXT,
+                "CLUSTERING_ORDINAL_POSITION" INTEGER
+            );
+        ''',
+        'VIEWS': f'''
+            CREATE TABLE IF NOT EXISTS "{schema_name}"."VIEWS" (
+                "TABLE_CATALOG" TEXT,
+                "TABLE_SCHEMA" TEXT,
+                "TABLE_NAME" TEXT,
+                "VIEW_DEFINITION" TEXT,
+                "CHECK_OPTION" TEXT,
+                "USE_STANDARD_SQL" TEXT
+            );
+        ''',
+        'TABLES__': f'''
+            CREATE TABLE IF NOT EXISTS "{schema_name}"."TABLES__" (
+                project_id TEXT,
+                dataset_id TEXT,
+                table_id TEXT,
+                creation_time BIGINT,
+                last_modified_time BIGINT,
+                row_count BIGINT,
+                size_bytes BIGINT,
+                type TEXT
+            );
+        ''',
+        'TABLES': f'''
+            CREATE TABLE IF NOT EXISTS "{schema_name}"."TABLES" (
+                "TABLE_CATALOG" TEXT,
+                "TABLE_SCHEMA" TEXT,
+                "TABLE_NAME" TEXT,
+                "TABLE_TYPE" TEXT,
+                "IS_INSERTABLE_INTO" TEXT,
+                "IS_TYPED" TEXT,
+                "CREATION_TIME" TIMESTAMPTZ,
+                "DDL" TEXT
+            );
+        '''
     }
-    return schemas.get(table_name, None)
+    return ddl_definitions.get(table_name, None)
 
-def save_to_parquet(df, output_dir, project_id, region, dataset, name):
-    """Save the dataframe to a parquet file with proper schema"""
-    try:
-        dataset_path = output_dir
-        os.makedirs(dataset_path, exist_ok=True)
+def serialize_complex_columns(df):
+    """Convert complex data types (dict, list, array) to JSON strings"""
+    for col in df.columns:
+        if df[col].apply(lambda x: isinstance(x, (dict, list, np.ndarray))).any():
+            def safe_serialize(x):
+                try:
+                    if isinstance(x, np.ndarray):
+                        return json.dumps(x.tolist())
+                    elif isinstance(x, (dict, list)):
+                        return json.dumps(x)
+                    else:
+                        return x
+                except (TypeError, ValueError):
+                    return None
+            df[col] = df[col].apply(safe_serialize)
+    return df
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{name}.{timestamp}.parquet"
-        filepath = os.path.join(dataset_path, filename)
-
-        # Get schema for this table
-        schema = get_schema_for_table(name)
-        
-        if schema and len(df) > 0:
-            # Convert DataFrame to PyArrow Table
-            table = pa.Table.from_pandas(df)
-            
-            # Try to cast to the defined schema
-            try:
-                table = table.cast(schema)
-            except Exception as e:
-                logging.warning(f"Could not cast to schema for {name}: {e}. Saving with inferred schema.")
-        else:
-            # Use pandas default conversion
-            table = pa.Table.from_pandas(df)
-
-        # Save with compression
-        pq.write_table(table, filepath, compression='snappy')
-        return filepath
-    except Exception as e:
-        logging.error(f"Error saving to parquet: {e}")
-        raise
-
-def save_cost_log(cost_data, output_dir):
-    """Save cost information to JSON and CSV files"""
-    try:
-        os.makedirs(output_dir, exist_ok=True)
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Save as JSON
-        json_filepath = os.path.join(output_dir, f"query_costs_{timestamp}.json")
-        with open(json_filepath, 'w') as f:
-            json.dump(cost_data, f, indent=2)
-        
-        # Save as CSV
-        csv_filepath = os.path.join(output_dir, f"query_costs_{timestamp}.csv")
-        df_costs = pd.DataFrame(cost_data)
-        df_costs.to_csv(csv_filepath, index=False)
-        
-        logging.info(f"Cost information saved to:")
-        logging.info(f"  - JSON: {json_filepath}")
-        logging.info(f"  - CSV: {csv_filepath}")
-        
-        return json_filepath, csv_filepath
-        
-    except Exception as e:
-        logging.error(f"Error saving cost log: {e}")
-        raise
-
-def extract_table_name(sql_text):
-    try:
-        sql_text = re.sub(r'\s+', ' ', sql_text.strip())
-        
-        # Check for INFORMATION_SCHEMA tables
-        info_schema_pattern = r"INFORMATION_SCHEMA\.([A-Za-z_][A-Za-z0-9_]*)"
-        match = re.search(info_schema_pattern, sql_text, re.IGNORECASE)
-        if match:
-            return match.group(1)
-        
-        # Check for __TABLES__ pattern (BigQuery metadata table)
-        tables_pattern = r"\.__TABLES__"
-        if re.search(tables_pattern, sql_text):
-            return "TABLES__"
-        
-        # General pattern for other tables
-        general_pattern = r"FROM\s+(?:`[^`]+`\.)*`?([A-Za-z_][A-Za-z0-9_]*)`?"
-        match = re.search(general_pattern, sql_text, re.IGNORECASE)
-        if match:
-            table_name = match.group(1)
-            return table_name
-        
-        return "unknown_table_name"
-        
-    except Exception as e:
-        logging.error(f"Error extracting table name from SQL: {e}")
-        return "unknown_table_name"
+# --- Process All Parquet Files ---
+try:
+    print(f"Connecting to PostgreSQL at {host}:{port}/{database}")
+    print(f"Loading data from: {parquet_folder}")
+    print(f"Target schema: {schema}")
     
-def main():
-    client, project_id, region, datasets, output_dir, days = get_creds()
-    setup_logging(verbose=True)
+    # Create schema if it doesn't exist
+    with engine.connect() as conn:
+        conn.execute(sqlalchemy.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+        conn.commit()
+        print(f"[OK] Schema '{schema}' ready")
+    
+    for file in os.listdir(parquet_folder):
+        if file.endswith('.parquet'):
+            file_path = os.path.join(parquet_folder, file)
+            print(f"\nReading {file_path}...")
+            
+            # Read Parquet file
+            df = pd.read_parquet(file_path)
+            df = serialize_complex_columns(df)
+            table_name = get_safe_table_name(file)
 
-    logging.info(f"Fetching schema information from {project_id} datasets: {datasets} ...")
-    queries = load_queries(os.path.abspath(os.path.join(os.path.dirname(__file__),"queries.yaml")))
-
-    # Initialize cost tracking
-    all_cost_data = []
-    total_cost = 0
-
-    for name, query in queries.items():
-        try:
-            # Only run TABLES__ logic for query6
-            if name == "query6":
-                all_tables_df = []
-                query_cost_data = []
+            # Get DDL for this table
+            ddl = get_table_ddl(table_name, schema)
+            
+            if ddl:
+                # Create table with proper DDL
+                with engine.connect() as conn:
+                    conn.execute(sqlalchemy.text(f'DROP TABLE IF EXISTS "{schema}"."{table_name}" CASCADE'))
+                    conn.execute(sqlalchemy.text(ddl))
+                    conn.commit()
+                print(f"  [OK] Created table with DDL: {schema}.{table_name}")
                 
-                for dataset_id in datasets:
-                    print(f"Processing dataset: {dataset_id}")
-                    formatted_query = query.format(region=region, dataset=dataset_id, project_id=project_id, days=days)
-                    print(f"Query for {dataset_id}: {formatted_query}")
-                    
-                    # Run query with cost logging
-                    df, cost_info = run_query_with_cost_logging(
-                        client, 
-                        formatted_query, 
-                        f"{name}_{dataset_id}"
-                    )
-                    
-                    print(f"Rows returned for {dataset_id}: {len(df)}")
-                    all_tables_df.append(df)
-                    query_cost_data.append(cost_info)
-                    all_cost_data.append(cost_info)
-                
-                if all_tables_df:
-                    combined_df = pd.concat(all_tables_df, ignore_index=True)
-                    print(f"Total rows after concat: {len(combined_df)}")
-                    
-                    table_name = extract_table_name(query)
-                    filepath = save_to_parquet(combined_df, output_dir, project_id, region, 'ALL_DATASETS', table_name)
-                    
-                    # Calculate total cost for this query across all datasets
-                    query_total_cost = sum(cost['estimated_cost_usd'] for cost in query_cost_data)
-                    total_cost += query_total_cost
-                    
-                    logging.info(f"Successfully saved {len(combined_df)} rows of schema information to:")
-                    logging.info(filepath)
-                    logging.info(f"File size: {os.path.getsize(filepath) / (1024 * 1024):.2f} MB")
-                    logging.info(f"Total cost for {name}: ${query_total_cost:.6f}")
+                # Insert data using pandas
+                if len(df) > 0:
+                    df.to_sql(table_name, engine, schema=schema, if_exists='append', index=False)
+                    print(f"  [OK] Loaded {len(df)} rows into table: {schema}.{table_name}")
                 else:
-                    logging.warning("No __TABLES__ data found for any dataset.")
+                    print(f"  [WARN] No data to load for: {schema}.{table_name}")
             else:
-                dataset_id = datasets[0]
-                formatted_query = query.format(region=region, dataset=dataset_id, project_id=project_id, days=days)
-                table_name = extract_table_name(formatted_query)
-                
-                # Run query with cost logging
-                df, cost_info = run_query_with_cost_logging(client, formatted_query, name)
-                all_cost_data.append(cost_info)
-                total_cost += cost_info['estimated_cost_usd']
-                
-                filepath = save_to_parquet(df, output_dir, project_id, region, dataset_id, table_name)
-                logging.info(f"Successfully saved {len(df)} rows of schema information to:")
-                logging.info(filepath)
-                logging.info(f"File size: {os.path.getsize(filepath) / (1024 * 1024):.2f} MB")
-                
-        except Exception as e:
-            logging.error(f"Error processing {name}: {str(e)}")
-            traceback.print_exc()
+                # Fallback to pandas default behavior for unknown tables
+                print(f"  [WARN] No DDL definition for {table_name}, using pandas default")
+                df.to_sql(table_name, engine, schema=schema, if_exists='replace', index=False)
+                print(f"  [OK] Loaded {len(df)} rows into table: {schema}.{table_name}")
 
-    # Save cost information
-    if all_cost_data:
-        save_cost_log(all_cost_data, output_dir)
-        
-        # Print cost summary
-        logging.info("\n" + "="*50)
-        logging.info("COST SUMMARY")
-        logging.info("="*50)
-        logging.info(f"Total queries executed: {len(all_cost_data)}")
-        logging.info(f"Total estimated cost: ${total_cost:.6f}")
-        logging.info("\nIndividual query costs:")
-        for cost_info in all_cost_data:
-            logging.info(f"  {cost_info['query_name']}: ${cost_info['estimated_cost_usd']:.6f}")
-        logging.info("="*50)
+    print("\n[SUCCESS] All parquet files loaded successfully!")
 
-if __name__ == "__main__":
-    main()
+except Exception as e:
+    print(f"\n[ERROR] {e}")
+    raise
+
+finally:
+    engine.dispose()
+    print("Connection closed.")
