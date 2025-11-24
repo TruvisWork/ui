@@ -2,77 +2,40 @@ import json
 import os
 import pandas as pd
 import numpy as np
+from .db_config import get_db_url_and_schema
+from google.cloud.sql.connector import Connector
 import sqlalchemy
-from sqlalchemy import create_engine
-import configparser
-import argparse
-from urllib.parse import quote_plus
-
-def resolve_config_path():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config-path', default=None)
-    args, _ = parser.parse_known_args()  
-
-    env_config_path = os.environ.get('CONFIG_PATH')
-    default_path = os.path.abspath('./extraction_utility/config/config.ini')
-
-    config_path = args.config_path or env_config_path or default_path
-    if config_path and not os.path.exists(config_path):
-        config_path = default_path
-
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    return config_path
-
-def get_postgres_config():
-    """Get PostgreSQL connection details from config"""
-    config = configparser.ConfigParser()
-    config_path = resolve_config_path()
-    print(f"Reading config from: {config_path}")
-    config.read(config_path)
-    
-    section = 'postgres_standard'
-    host = config.get(section, 'host')
-    port = config.get(section, 'port', fallback='5432')
-    database = config.get(section, 'database')
-    user = config.get(section, 'user')
-    password = config.get(section, 'password')
-    schema = config.get(section, 'schema')
-    input_dir = config.get('extraction_utility', 'data_output_directory')
-    
-    print(f"DEBUG - Host read from config: '{host}'")
-    print(f"DEBUG - Database: '{database}'")
-    print(f"DEBUG - User: '{user}'")
-    print(f"DEBUG - Schema: '{schema}'")
-    
-    return host, port, database, user, password, schema, input_dir
 
 # --- Config ---
-host, port, database, user, password, schema, parquet_folder = get_postgres_config()
+instance_conn, database, iam_user, schema, parquet_folder, ip_type = get_db_url_and_schema()
 
-# URL encode password to handle special characters like @
-encoded_password = quote_plus(password)
+connector = Connector()
 
-# Create PostgreSQL connection string
-connection_string = f"postgresql://{user}:{encoded_password}@{host}:{port}/{database}"
-engine = create_engine(connection_string)
+def getconn():
+    conn = connector.connect(
+        instance_conn,
+        "pg8000",
+        user=iam_user,
+        db=database,
+        enable_iam_auth=True,
+        ip_type=ip_type,
+    )
+    return conn
+
+engine = sqlalchemy.create_engine(
+    "postgresql+pg8000://",
+    creator=getconn,
+)
 
 # --- Function to ensure table name length limit ---
 def get_safe_table_name(file_name):
-    # Remove extension like .parquet if present
     file_name = file_name.replace('.parquet', '')
-
-    # Split on underscores
     parts = file_name.split('.')
-    base_name = parts[0]  # Remove any file extension if present
-    
+    base_name = parts[0]
     return base_name
 
 def get_table_ddl(table_name, schema_name):
-    """Get DDL for creating tables based on BigQuery INFORMATION_SCHEMA structure
-    Mapping: BQ STRING->TEXT, BQ INTEGER->INTEGER, BQ BOOL->BOOLEAN, 
-             BQ TIMESTAMP->TIMESTAMPTZ, BQ RECORD/ARRAY->JSONB"""
+    """Get DDL for creating tables based on BigQuery INFORMATION_SCHEMA structure"""
     ddl_definitions = {
         'SCHEMATA': f'''
             CREATE TABLE IF NOT EXISTS "{schema_name}"."SCHEMATA" (
@@ -195,7 +158,7 @@ def get_table_ddl(table_name, schema_name):
     return ddl_definitions.get(table_name, None)
 
 def serialize_complex_columns(df):
-    """Convert complex data types (dict, list, array) to JSON strings"""
+    """Convert complex types (dict, list, array) to JSON strings"""
     for col in df.columns:
         if df[col].apply(lambda x: isinstance(x, (dict, list, np.ndarray))).any():
             def safe_serialize(x):
@@ -213,55 +176,78 @@ def serialize_complex_columns(df):
 
 # --- Process All Parquet Files ---
 try:
-    print(f"Connecting to PostgreSQL at {host}:{port}/{database}")
+    print(f"Connecting to Cloud SQL PostgreSQL")
     print(f"Loading data from: {parquet_folder}")
     print(f"Target schema: {schema}")
     
     # Create schema if it doesn't exist
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         conn.execute(sqlalchemy.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
-        conn.commit()
-        print(f"[OK] Schema '{schema}' ready")
+    print(f"[OK] Schema '{schema}' ready")
     
     for file in os.listdir(parquet_folder):
         if file.endswith('.parquet'):
             file_path = os.path.join(parquet_folder, file)
             print(f"\nReading {file_path}...")
             
-            # Read Parquet file
-            df = pd.read_parquet(file_path)
-            df = serialize_complex_columns(df)
-            table_name = get_safe_table_name(file)
+            try:
+                # Read Parquet file
+                df = pd.read_parquet(file_path)
+                df = serialize_complex_columns(df)
+                table_name = get_safe_table_name(file)
 
-            # Get DDL for this table
-            ddl = get_table_ddl(table_name, schema)
-            
-            if ddl:
-                # Create table with proper DDL
-                with engine.connect() as conn:
-                    conn.execute(sqlalchemy.text(f'DROP TABLE IF EXISTS "{schema}"."{table_name}" CASCADE'))
-                    conn.execute(sqlalchemy.text(ddl))
-                    conn.commit()
-                print(f"  [OK] Created table with DDL: {schema}.{table_name}")
+                # Get DDL for this table
+                ddl = get_table_ddl(table_name, schema)
                 
-                # Insert data using pandas
-                if len(df) > 0:
-                    df.to_sql(table_name, engine, schema=schema, if_exists='append', index=False)
-                    print(f"  [OK] Loaded {len(df)} rows into table: {schema}.{table_name}")
+                if ddl:
+                    # Create table with proper DDL
+                    with engine.begin() as conn:
+                        conn.execute(sqlalchemy.text(f'DROP TABLE IF EXISTS "{schema}"."{table_name}" CASCADE'))
+                        conn.execute(sqlalchemy.text(ddl))
+                    print(f"  [OK] Created table with DDL: {schema}.{table_name}")
+                    
+                    # Insert data using pandas - KEY FIX: Pass engine, not connection
+                    if len(df) > 0:
+                        df.to_sql(
+                            table_name, 
+                            engine, 
+                            schema=schema, 
+                            if_exists='append', 
+                            index=False,
+                            method='multi',  # Better performance and error handling
+                            chunksize=1000   # Process in chunks to avoid memory issues
+                        )
+                        print(f"  [OK] Loaded {len(df)} rows into table: {schema}.{table_name}")
+                    else:
+                        print(f"  [WARN] No data to load for: {schema}.{table_name}")
                 else:
-                    print(f"  [WARN] No data to load for: {schema}.{table_name}")
-            else:
-                # Fallback to pandas default behavior for unknown tables
-                print(f"  [WARN] No DDL definition for {table_name}, using pandas default")
-                df.to_sql(table_name, engine, schema=schema, if_exists='replace', index=False)
-                print(f"  [OK] Loaded {len(df)} rows into table: {schema}.{table_name}")
+                    # Fallback to pandas default behavior for unknown tables
+                    print(f"  [WARN] No DDL definition for {table_name}, using pandas default")
+                    df.to_sql(
+                        table_name, 
+                        engine, 
+                        schema=schema, 
+                        if_exists='replace', 
+                        index=False,
+                        method='multi',
+                        chunksize=1000
+                    )
+                    print(f"  [OK] Loaded {len(df)} rows into table: {schema}.{table_name}")
+            
+            except Exception as file_error:
+                print(f"  [ERROR] Failed to process {file}: {file_error}")
+                # Continue with next file instead of stopping entire process
+                continue
 
-    print("\n[SUCCESS] All parquet files loaded successfully!")
+    print("\n[SUCCESS] All parquet files processed!")
 
 except Exception as e:
     print(f"\n[ERROR] {e}")
+    import traceback
+    traceback.print_exc()
     raise
 
 finally:
     engine.dispose()
+    connector.close()
     print("Connection closed.")
