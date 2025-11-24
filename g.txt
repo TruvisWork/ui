@@ -1,18 +1,65 @@
-stage("Install Gradle") {
+stage('Install Gradle') {
     steps {
         script {
-            sh '''
-            mkdir -p /opt/gradle
-            curl -u $NEXUS_USER:$NEXUS_PASS \
-              -o /opt/gradle/gradle-8.3.zip \
-              "https://nexus.***.com/repository/tools/gradle/8.3/gradle-8.3.zip"
-
-            unzip -qo /opt/gradle/gradle-8.3.zip -d /opt/gradle
-            export GRADLE_HOME=/opt/gradle/gradle-8.3
-            export PATH=$GRADLE_HOME/bin:$PATH
-
-            gradle -v
-            '''
+            // Define variables
+            def gradleVersion = env.GRADLE_VERSION ?: '8.3' // Default to 8.3 if not set
+            def toolPath = "/ds_build_new/build_tools"
+            def gradleHome = "${toolPath}/gradle/${gradleVersion}"
+            def gradleCachePath = "/ds_build_new/gradle_cache"
+            
+            echo "Installing Gradle ${gradleVersion}"
+            
+            // Check if Gradle is already installed
+            def statusCode = sh(
+                script: "test -d ${gradleHome} && echo '0' || echo '1'",
+                returnStdout: true
+            ).trim()
+            
+            if (statusCode == '0') {
+                echo "Gradle ${gradleVersion} already installed at ${gradleHome}"
+            } else {
+                echo "Gradle ${gradleVersion} not found. Installing..."
+                
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: env.NEXUS_CREDENTIALS_ID,
+                        usernameVariable: 'NEXUS_USER',
+                        passwordVariable: 'NEXUS_TOKEN'
+                    )
+                ]) {
+                    // Create temporary directory
+                    sh "cd /tmp"
+                    
+                    // Download Gradle from Nexus
+                    sh """
+                        curl https://\${NEXUS_USER}:\${NEXUS_TOKEN}@nexus305.systems.uk.hsbc:8081/nexus/repository/maven-hsbc-internal_prod_nsp/com/hsbc/mss/qds/gradle/\${gradleVersion}/gradle-\${gradleVersion}.zip -o temp.zip
+                    """
+                    
+                    // Unzip the file
+                    sh "unzip temp.zip"
+                    
+                    // Move to the correct location
+                    sh "mv gradle-${gradleVersion} ${gradleVersion}"
+                    sh "mv ${gradleVersion} ${toolPath}/gradle/"
+                    
+                    echo "Gradle ${gradleVersion} installed successfully at ${gradleHome}"
+                }
+            }
+            
+            // Update local cache
+            echo "Updating Local Cache"
+            sh "rsync -a --include /caches --exclude '/*' ${gradleCachePath}/ \$HOME/.gradle || true"
+            echo "Updated Local Cache"
+            
+            // Update remote cache
+            echo "Updating Remote Cache"
+            sh "find \$HOME/.gradle/caches/ -name \\"*.lock\\" -type f -delete || true"
+            sh "rsync -au \$HOME/.gradle/caches ${gradleCachePath}/ || true"
+            echo "Updated Remote Cache"
+            
+            // Clean up old cache files (older than 14 days)
+            echo "Removing files older than 14 days from Cache"
+            sh "find ${gradleCachePath}/* -daystart -mtime +14 -delete || true"
         }
     }
 }
