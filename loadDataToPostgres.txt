@@ -22,10 +22,13 @@ def getconn():
         ip_type=ip_type,
     )
     return conn
-engine = sqlalchemy.create_engine(
-    "postgresql+pg8000://",
-    creator=getconn,
-)
+
+def create_engine():
+    """Create a new SQLAlchemy engine"""
+    return sqlalchemy.create_engine(
+        "postgresql+pg8000://",
+        creator=getconn,
+    )
 
 # --- Function to ensure table name length limit ---
 def get_safe_table_name(file_name):
@@ -114,6 +117,7 @@ def serialize_complex_columns(df):
 
 
 # --- Process All Parquet Files ---
+engine = None
 try:
     print(f"Connecting to Cloud SQL PostgreSQL")
     print(f"Loading data from: {parquet_folder}")
@@ -122,7 +126,11 @@ try:
     # Run DDL scripts first to create tables
     run_ddl_scripts(connector, instance_conn, database, iam_user, schema, ip_type)
     
-    print(f"\n[INFO] Loading parquet files...")
+    # Create engine after DDL scripts have run
+    print(f"\n[INFO] Creating database engine for data loading...")
+    engine = create_engine()
+    
+    print(f"[INFO] Loading parquet files...")
     for file in os.listdir(parquet_folder):
         if file.endswith('.parquet'):
             file_path = os.path.join(parquet_folder, file)
@@ -144,9 +152,12 @@ try:
 
 except Exception as e:
     print(f"\n[ERROR] {e}")
+    import traceback
+    traceback.print_exc()
     raise
 
 finally:
-    engine.dispose()
+    if engine:
+        engine.dispose()
     connector.close()
     print("Connection closed.")
