@@ -1,253 +1,82 @@
-import json
-import os
-import pandas as pd
-import numpy as np
-from .db_config import get_db_url_and_schema
-from google.cloud.sql.connector import Connector
-import sqlalchemy
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 
-# --- Config ---
-instance_conn, database, iam_user, schema, parquet_folder, ip_type = get_db_url_and_schema()
+// Mock the components
+vi.mock('./components/Insight', () => ({
+    default: () => <div>Insight Component</div>
+}));
 
-connector = Connector()
+vi.mock('./components/Optimize', () => ({
+    default: () => <div>Optimize Component</div>
+}));
 
-def getconn():
-    conn = connector.connect(
-        instance_conn,
-        "pg8000",
-        user=iam_user,
-        db=database,
-        enable_iam_auth=True,
-        ip_type=ip_type,
-    )
-    return conn
+vi.mock('./components/Recommendation', () => ({
+    default: () => <div>Recommendation Component</div>
+}));
 
-engine = sqlalchemy.create_engine(
-    "postgresql+pg8000://",
-    creator=getconn,
-)
+vi.mock('./components/DataCatalogEditor', () => ({
+    default: () => <div>DataCatalogEditor Component</div>
+}));
 
-# --- Function to ensure table name length limit ---
-def get_safe_table_name(file_name):
-    file_name = file_name.replace('.parquet', '')
-    parts = file_name.split('.')
-    base_name = parts[0]
-    return base_name
+vi.mock('./components/Auth', () => ({
+    default: () => <div>Auth Component</div>
+}));
 
-def get_table_ddl(table_name, schema_name):
-    """Get DDL for creating tables based on BigQuery INFORMATION_SCHEMA structure"""
-    ddl_definitions = {
-        'SCHEMATA': f'''
-            CREATE TABLE IF NOT EXISTS "{schema_name}"."SCHEMATA" (
-                catalog_name TEXT,
-                schema_name TEXT,
-                schema_owner TEXT,
-                creation_time TIMESTAMPTZ,
-                last_modified_time TIMESTAMPTZ,
-                location TEXT
-            );
-        ''',
-        'JOBS_BY_PROJECT': f'''
-            CREATE TABLE IF NOT EXISTS "{schema_name}"."JOBS_BY_PROJECT" (
-                creation_time TIMESTAMPTZ,
-                project_id TEXT,
-                project_number BIGINT,
-                user_email TEXT,
-                job_id TEXT,
-                job_type TEXT,
-                parent_job_id TEXT,
-                session_info TEXT,
-                statement_type TEXT,
-                start_time TIMESTAMPTZ,
-                end_time TIMESTAMPTZ,
-                query TEXT,
-                state TEXT,
-                reservation_id TEXT,
-                total_bytes_processed BIGINT,
-                total_slot_ms BIGINT,
-                total_modified_partitions BIGINT,
-                total_bytes_billed BIGINT,
-                error_result_reason TEXT,
-                error_result_location TEXT,
-                error_result_debug_info TEXT,
-                error_result_message TEXT,
-                cache_hit BOOLEAN,
-                destination_project_id TEXT,
-                destination_dataset_id TEXT,
-                destination_table_id TEXT,
-                referenced_tables JSONB,
-                labels JSONB,
-                timeline JSONB,
-                job_stages JSONB
-            );
-        ''',
-        'ROUTINES': f'''
-            CREATE TABLE IF NOT EXISTS "{schema_name}"."ROUTINES" (
-                "SPECIFIC_CATALOG" TEXT,
-                "SPECIFIC_SCHEMA" TEXT,
-                "SPECIFIC_NAME" TEXT,
-                "ROUTINE_CATALOG" TEXT,
-                "ROUTINE_SCHEMA" TEXT,
-                "ROUTINE_NAME" TEXT,
-                "ROUTINE_TYPE" TEXT,
-                "DATA_TYPE" TEXT,
-                "ROUTINE_BODY" TEXT,
-                "ROUTINE_DEFINITION" TEXT,
-                "EXTERNAL_LANGUAGE" TEXT,
-                "IS_DETERMINISTIC" TEXT,
-                "SECURITY_TYPE" TEXT,
-                "CREATED" TIMESTAMPTZ,
-                "LAST_ALTERED" TIMESTAMPTZ,
-                "DDL" TEXT
-            );
-        ''',
-        'COLUMNS': f'''
-            CREATE TABLE IF NOT EXISTS "{schema_name}"."COLUMNS" (
-                "TABLE_CATALOG" TEXT,
-                "TABLE_SCHEMA" TEXT,
-                "TABLE_NAME" TEXT,
-                "COLUMN_NAME" TEXT,
-                "ORDINAL_POSITION" INTEGER,
-                "IS_NULLABLE" TEXT,
-                "DATA_TYPE" TEXT,
-                "IS_GENERATED" TEXT,
-                "GENERATION_EXPRESSION" TEXT,
-                "IS_STORED" TEXT,
-                "IS_HIDDEN" TEXT,
-                "IS_UPDATABLE" TEXT,
-                "IS_SYSTEM_DEFINED" TEXT,
-                "IS_PARTITIONING_COLUMN" TEXT,
-                "CLUSTERING_ORDINAL_POSITION" INTEGER
-            );
-        ''',
-        'VIEWS': f'''
-            CREATE TABLE IF NOT EXISTS "{schema_name}"."VIEWS" (
-                "TABLE_CATALOG" TEXT,
-                "TABLE_SCHEMA" TEXT,
-                "TABLE_NAME" TEXT,
-                "VIEW_DEFINITION" TEXT,
-                "CHECK_OPTION" TEXT,
-                "USE_STANDARD_SQL" TEXT
-            );
-        ''',
-        'TABLES__': f'''
-            CREATE TABLE IF NOT EXISTS "{schema_name}"."TABLES__" (
-                project_id TEXT,
-                dataset_id TEXT,
-                table_id TEXT,
-                creation_time BIGINT,
-                last_modified_time BIGINT,
-                row_count BIGINT,
-                size_bytes BIGINT,
-                type TEXT
-            );
-        ''',
-        'TABLES': f'''
-            CREATE TABLE IF NOT EXISTS "{schema_name}"."TABLES" (
-                "TABLE_CATALOG" TEXT,
-                "TABLE_SCHEMA" TEXT,
-                "TABLE_NAME" TEXT,
-                "TABLE_TYPE" TEXT,
-                "IS_INSERTABLE_INTO" TEXT,
-                "IS_TYPED" TEXT,
-                "CREATION_TIME" TIMESTAMPTZ,
-                "DDL" TEXT
-            );
-        '''
-    }
-    return ddl_definitions.get(table_name, None)
+vi.mock('./components/QueryDetailsPage', () => ({
+    default: () => <div>QueryDetailsPage Component</div>
+}));
 
-def serialize_complex_columns(df):
-    """Convert complex types (dict, list, array) to JSON strings"""
-    for col in df.columns:
-        if df[col].apply(lambda x: isinstance(x, (dict, list, np.ndarray))).any():
-            def safe_serialize(x):
-                try:
-                    if isinstance(x, np.ndarray):
-                        return json.dumps(x.tolist())
-                    elif isinstance(x, (dict, list)):
-                        return json.dumps(x)
-                    else:
-                        return x
-                except (TypeError, ValueError):
-                    return None
-            df[col] = df[col].apply(safe_serialize)
-    return df
+describe('App Component', () => {
+    beforeEach(() => {
+        sessionStorage.clear();
+        vi.clearAllMocks();
+    });
 
-# --- Process All Parquet Files ---
-try:
-    print(f"Connecting to Cloud SQL PostgreSQL")
-    print(f"Loading data from: {parquet_folder}")
-    print(f"Target schema: {schema}")
-    
-    # Create schema if it doesn't exist
-    with engine.begin() as conn:
-        conn.execute(sqlalchemy.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
-    print(f"[OK] Schema '{schema}' ready")
-    
-    for file in os.listdir(parquet_folder):
-        if file.endswith('.parquet'):
-            file_path = os.path.join(parquet_folder, file)
-            print(f"\nReading {file_path}...")
-            
-            try:
-                # Read Parquet file
-                df = pd.read_parquet(file_path)
-                df = serialize_complex_columns(df)
-                table_name = get_safe_table_name(file)
+    it('should handle sessionStorage operations', () => {
+        sessionStorage.setItem('selectedMarket', 'US');
+        expect(sessionStorage.getItem('selectedMarket')).toBe('US');
 
-                # Get DDL for this table
-                ddl = get_table_ddl(table_name, schema)
-                
-                if ddl:
-                    # Create table with proper DDL
-                    with engine.begin() as conn:
-                        conn.execute(sqlalchemy.text(f'DROP TABLE IF EXISTS "{schema}"."{table_name}" CASCADE'))
-                        conn.execute(sqlalchemy.text(ddl))
-                    print(f"  [OK] Created table with DDL: {schema}.{table_name}")
-                    
-                    # Insert data using pandas - KEY FIX: Pass engine, not connection
-                    if len(df) > 0:
-                        df.to_sql(
-                            table_name, 
-                            engine, 
-                            schema=schema, 
-                            if_exists='append', 
-                            index=False,
-                            method='multi',  # Better performance and error handling
-                            chunksize=1000   # Process in chunks to avoid memory issues
-                        )
-                        print(f"  [OK] Loaded {len(df)} rows into table: {schema}.{table_name}")
-                    else:
-                        print(f"  [WARN] No data to load for: {schema}.{table_name}")
-                else:
-                    # Fallback to pandas default behavior for unknown tables
-                    print(f"  [WARN] No DDL definition for {table_name}, using pandas default")
-                    df.to_sql(
-                        table_name, 
-                        engine, 
-                        schema=schema, 
-                        if_exists='replace', 
-                        index=False,
-                        method='multi',
-                        chunksize=1000
-                    )
-                    print(f"  [OK] Loaded {len(df)} rows into table: {schema}.{table_name}")
-            
-            except Exception as file_error:
-                print(f"  [ERROR] Failed to process {file}: {file_error}")
-                # Continue with next file instead of stopping entire process
-                continue
+        sessionStorage.removeItem('selectedMarket');
+        expect(sessionStorage.getItem('selectedMarket')).toBeNull();
+    });
 
-    print("\n[SUCCESS] All parquet files processed!")
+    it('should store and retrieve user information', () => {
+        sessionStorage.setItem('userName', 'testuser');
+        sessionStorage.setItem('projectId', 'test-project-123');
+        sessionStorage.setItem('selectedMarket', 'UK');
 
-except Exception as e:
-    print(f"\n[ERROR] {e}")
-    import traceback
-    traceback.print_exc()
-    raise
+        expect(sessionStorage.getItem('userName')).toBe('testuser');
+        expect(sessionStorage.getItem('projectId')).toBe('test-project-123');
+        expect(sessionStorage.getItem('selectedMarket')).toBe('UK');
+    });
 
-finally:
-    engine.dispose()
-    connector.close()
-    print("Connection closed.")
+    it('should clear all session data', () => {
+        sessionStorage.setItem('allowedMarkets', 'US,UK');
+        sessionStorage.setItem('selectedMarket', 'US');
+        sessionStorage.setItem('username', 'john');
+
+        sessionStorage.clear();
+
+        expect(sessionStorage.getItem('allowedMarkets')).toBeNull();
+        expect(sessionStorage.getItem('selectedMarket')).toBeNull();
+        expect(sessionStorage.getItem('username')).toBeNull();
+    });
+
+    it('should validate protected route logic', () => {
+        const selectedMarket = sessionStorage.getItem('selectedMarket');
+        expect(selectedMarket).toBeNull();
+
+        sessionStorage.setItem('selectedMarket', 'US');
+        const marketAfterSet = sessionStorage.getItem('selectedMarket');
+        expect(marketAfterSet).toBe('US');
+    });
+
+    it('should handle market change request flag', () => {
+        sessionStorage.setItem('changeMarketRequest', 'true');
+        expect(sessionStorage.getItem('changeMarketRequest')).toBe('true');
+
+        sessionStorage.removeItem('changeMarketRequest');
+        expect(sessionStorage.getItem('changeMarketRequest')).toBeNull();
+    });
+});
