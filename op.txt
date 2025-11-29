@@ -1,3 +1,30 @@
+CREATE INDEX IF NOT EXISTS idx_entity_relationship_stmt_relationship 
+ON entity_relationship(sql_statement_info_id, relationship_type);
+
+-- 3. Composite index for entity_relationship with all key columns
+CREATE INDEX IF NOT EXISTS idx_entity_relationship_composite 
+ON entity_relationship(sql_statement_info_id, relationship_type, source_entity_type, target_entity_type);
+
+-- 4. Index for statement_context join
+CREATE INDEX IF NOT EXISTS idx_statement_context_stmt_id 
+ON statement_context(sql_statement_info_id);
+
+-- 5. Index for query_log join
+CREATE INDEX IF NOT EXISTS idx_query_log_log_id 
+ON query_log(log_id);
+
+-- 6. Index for table_metadata join (composite for all join columns)
+CREATE INDEX IF NOT EXISTS idx_table_metadata_lookup 
+ON table_metadata(database, schema, table_name);
+
+-- 7. If filtering by entity types is common, add this
+CREATE INDEX IF NOT EXISTS idx_entity_relationship_entity_types 
+ON entity_relationship(source_entity_type, target_entity_type) 
+WHERE source_entity_type = 'EXTERNAL_TABLE' OR target_entity_type = 'EXTERNAL_TABLE';
+
+========================================
+
+
 -- Key Fixes Applied:
 -- 1. Changed INNER JOIN to LEFT JOIN for event_store_data
 -- 2. Changed ORDER BY from DESC to ASC in event_store ROW_NUMBER
@@ -6,6 +33,8 @@
 -- 5. Fixed alert amount logic to match original
 
 WITH event_store_data AS (
+
+
   SELECT
     t1.lifecycle_id,
     t1.sender_transaction_amount_dbl,
