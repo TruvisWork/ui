@@ -10,6 +10,7 @@ import com.calcite_new.sql.core.processor.utils.JoinAnalyzer;
 import com.calcite_new.sql.core.processor.utils.SqlConditionUtils;
 import com.calcite_new.sql.core.processor.utils.PartitionColumnFunctionDetector;
 import com.calcite_new.sql.core.processor.utils.WindowFunctionDetector;
+import com.calcite_new.sql.model.entity.ColumnInfo;
 import com.calcite_new.sql.model.entity.context.clause.*;
 import com.calcite_new.sql.model.enums.ClauseType;
 import com.calcite_new.sql.model.enums.StatementType;
@@ -132,13 +133,58 @@ public class SelectVisitor extends BaseStatementVisitor {
             boolean hasFunctionOnPartition = partitionDetector.hasFunctionOnPartitionColumn(whereExpr);
             whereClause.setHasFunctionOnPartitionColumn(hasFunctionOnPartition);
 
-            // Extract columns used in WHERE clause with occurrence tracking
-            Map<String, Integer> tableOccurrenceMap = computeTableOccurrenceMap(result.getSourceTables());
-            result.getColumnInfos().addAll(ColumnExtractor.extractColumns(whereExpr, ClauseType.WHERE, dialect.product.name, tableOccurrenceMap));
-
             SqlNodeVisitor visitor = new SqlNodeVisitor(userName, defaultDatabase, defaultSchema, relationshipExtractor, entityCatalog);
             SqlNodeVisitor.Result whereResult = whereExpr.accept(visitor);
+            
+            int mainQueryTableCount = result.getSourceTables().size();
             SqlNodeVisitor.mergeResults(result, whereResult);
+            result.getColumnInfos().removeIf(ci -> ci.getClause() == ClauseType.WHERE);
+            
+            Map<String, Integer> mainQueryOccurrenceMap = new HashMap<>();
+            for (int i = 0; i < mainQueryTableCount; i++) {
+                SqlIdentifier tableId = result.getSourceTables().get(i);
+                String tableName = getTableNameFromEntity(tableId);
+                if (tableName == null) {
+                    tableName = getTableName(tableId);
+                }
+                if (tableName != null) {
+                    mainQueryOccurrenceMap.put(tableName.toLowerCase(), 1);
+                }
+            }
+            List<ColumnInfo> mainQueryColumns = extractColumnsExcludingSubqueries(whereExpr, ClauseType.WHERE, dialect.product.name, mainQueryOccurrenceMap);
+            result.getColumnInfos().addAll(mainQueryColumns);
+
+            Map<String, Integer> subqueryOccurrenceMap = new HashMap<>();
+            Map<String, Boolean> mainQueryTableMap = new HashMap<>();
+            for (int i = 0; i < mainQueryTableCount; i++) {
+                SqlIdentifier tableId = result.getSourceTables().get(i);
+                String tableName = getTableNameFromEntity(tableId);
+                if (tableName == null) {
+                    tableName = getTableName(tableId);
+                }
+                if (tableName != null) {
+                    mainQueryTableMap.put(tableName.toLowerCase(), true);
+                }
+            }
+            
+            for (int i = mainQueryTableCount; i < result.getSourceTables().size(); i++) {
+                SqlIdentifier tableId = result.getSourceTables().get(i);
+                String tableName = getTableNameFromEntity(tableId);
+                if (tableName == null) {
+                    tableName = getTableName(tableId);
+                }
+                if (tableName != null) {
+                    String normalizedTableName = tableName.toLowerCase();
+                    if (mainQueryTableMap.containsKey(normalizedTableName)) {
+                        subqueryOccurrenceMap.put(normalizedTableName, 2);
+                    } else {
+                        subqueryOccurrenceMap.put(normalizedTableName, 1);
+                    }
+                }
+            }
+            
+            List<ColumnInfo> subqueryColumns = extractColumnsFromSubqueries(whereExpr, ClauseType.WHERE, dialect.product.name, subqueryOccurrenceMap, mainQueryTableCount);
+            result.getColumnInfos().addAll(subqueryColumns);
         }
 
         whereClause.setHasCaseInsensitiveComparison(hasCaseInsensitive);
@@ -316,44 +362,40 @@ public class SelectVisitor extends BaseStatementVisitor {
     /**
      * Computes a map from table name (normalized) to occurrence number.
      * The occurrence number represents the order in which the table appears in the query.
-     * For example, if the same table appears twice, the first occurrence is 1, the second is 2.
-     * 
-     * Since sourceTables is now a List, we can properly track multiple occurrences of the same table.
-     * Each time a table appears in the query, we increment its occurrence count.
-     * 
-     * IMPORTANT: We extract the table name from the entity's normalized name (if available)
-     * to match what's used in ColumnInfo, not from the SqlIdentifier which might be an alias.
      * 
      * @param sourceTables The list of source tables from the query (preserves insertion order)
      * @return Map from normalized table name to occurrence number (1-based)
-     *         If the same table appears multiple times, each occurrence gets its own number.
-     *         For example: table appears 3 times -> occurrences 1, 2, 3
      */
     private Map<String, Integer> computeTableOccurrenceMap(List<SqlIdentifier> sourceTables) {
+        return computeTableOccurrenceMapWithFirstOccurrence(sourceTables, 0);
+    }
+
+    /**
+     * Computes a map from table name (normalized) to occurrence number.
+     * 
+     * @param sourceTables The list of source tables from the query (preserves insertion order)
+     * @param mainQueryTableCount The number of tables from the main query (before subqueries)
+     * @return Map from normalized table name to occurrence number
+     */
+    private Map<String, Integer> computeTableOccurrenceMapWithFirstOccurrence(List<SqlIdentifier> sourceTables, int mainQueryTableCount) {
         Map<String, Integer> occurrenceMap = new HashMap<>();
         if (sourceTables == null || sourceTables.isEmpty()) {
             return occurrenceMap;
         }
 
-        // Track occurrence count per table name as we iterate through sourceTables
-        // Since it's a List, we can properly track multiple occurrences
+        // Track first occurrence per table name
+        Map<String, Integer> firstOccurrenceMap = new HashMap<>();
+        // Track current occurrence count per table
         Map<String, Integer> tableCountMap = new HashMap<>();
         
-        for (SqlIdentifier tableId : sourceTables) {
-            // CRITICAL: Always try to get table name from entity first
-            // This matches what ColumnExtractor uses in createColumnInfo()
+        for (int i = 0; i < sourceTables.size(); i++) {
+            SqlIdentifier tableId = sourceTables.get(i);
             String tableName = getTableNameFromEntity(tableId);
             
-            // Fallback to getTableName if entity is not available
-            // This handles cases where the identifier hasn't been enriched yet
             if (tableName == null) {
                 tableName = getTableName(tableId);
-                // If we got a name from getTableName, it might be an alias or unqualified name
-                // Try to resolve it to the actual table name by checking if it's a SqlTableIdentifier/SqlViewIdentifier
-                // and if the entity is available after all
                 if (tableName != null && (tableId instanceof com.calcite_new.sql.SqlTableIdentifier || 
                                           tableId instanceof com.calcite_new.sql.SqlViewIdentifier)) {
-                    // Try entity again in case it was just attached
                     String entityTableName = getTableNameFromEntity(tableId);
                     if (entityTableName != null) {
                         tableName = entityTableName;
@@ -363,16 +405,153 @@ public class SelectVisitor extends BaseStatementVisitor {
             
             if (tableName != null) {
                 String normalizedTableName = tableName.toLowerCase();
-                // Increment count for this table (tracks how many times we've seen this table)
                 int currentCount = tableCountMap.getOrDefault(normalizedTableName, 0) + 1;
                 tableCountMap.put(normalizedTableName, currentCount);
-                // Store the occurrence number (1-based) for this table
-                // Since we're iterating through a List, each appearance gets its own occurrence number
-                occurrenceMap.put(normalizedTableName, currentCount);
+                
+                if (!firstOccurrenceMap.containsKey(normalizedTableName)) {
+                    firstOccurrenceMap.put(normalizedTableName, 1);
+                    occurrenceMap.put(normalizedTableName, 1);
+                } else {
+                    occurrenceMap.put(normalizedTableName, currentCount);
+                }
             }
         }
         
         return occurrenceMap;
+    }
+
+    private List<ColumnInfo> extractColumnsExcludingSubqueries(SqlNode whereExpr, ClauseType clauseType, String product, Map<String, Integer> occurrenceMap) {
+        List<ColumnInfo> columnInfos = new ArrayList<>();
+        extractColumnsExcludingSubqueriesRecursive(whereExpr, clauseType, product, columnInfos, occurrenceMap);
+        return columnInfos;
+    }
+    private void extractColumnsExcludingSubqueriesRecursive(SqlNode node, ClauseType clauseType, String product, List<ColumnInfo> columnInfos, Map<String, Integer> occurrenceMap) {
+        if (node == null) {
+            return;
+        }
+
+        if (node instanceof SqlSelect) {
+            return;
+        }
+
+        if (node instanceof com.calcite_new.sql.SqlColumnIdentifier || 
+            (node instanceof SqlIdentifier id && 
+             !(id instanceof com.calcite_new.sql.SqlTableIdentifier) && 
+             !(id instanceof com.calcite_new.sql.SqlViewIdentifier))) {
+            List<ColumnInfo> extracted = ColumnExtractor.extractColumns(node, clauseType, product, occurrenceMap);
+            for (ColumnInfo ci : extracted) {
+                if (ci != null && !columnInfos.contains(ci)) {
+                    columnInfos.add(ci);
+                }
+            }
+        }
+        else if (node instanceof SqlCall call) {
+            for (SqlNode operand : call.getOperandList()) {
+                extractColumnsExcludingSubqueriesRecursive(operand, clauseType, product, columnInfos, occurrenceMap);
+            }
+        }
+        else if (node instanceof SqlNodeList nodeList) {
+            for (SqlNode item : nodeList.getList()) {
+                extractColumnsExcludingSubqueriesRecursive(item, clauseType, product, columnInfos, occurrenceMap);
+            }
+        }
+    }
+
+    private List<ColumnInfo> extractColumnsFromSubqueries(SqlNode whereExpr, ClauseType clauseType, String product, Map<String, Integer> occurrenceMap, int mainQueryTableCount) {
+        List<ColumnInfo> columnInfos = new ArrayList<>();
+        extractColumnsFromSubqueriesRecursive(whereExpr, clauseType, product, columnInfos, occurrenceMap, mainQueryTableCount);
+        return columnInfos;
+    }
+    private void extractColumnsFromSubqueriesRecursive(SqlNode node, ClauseType clauseType, String product, List<ColumnInfo> columnInfos, Map<String, Integer> occurrenceMap, int mainQueryTableCount) {
+        if (node == null) {
+            return;
+        }
+
+        if (node instanceof SqlSelect subquery) {
+            if (subquery.getWhere() != null) {
+                List<ColumnInfo> subqueryColumns = ColumnExtractor.extractColumns(subquery.getWhere(), clauseType, product, occurrenceMap);
+                
+                List<ColumnInfo> fixedColumns = new ArrayList<>();
+                for (ColumnInfo ci : subqueryColumns) {
+                    ColumnInfo fixed = ci;
+                    if (ci.getTableName() == null && subquery.getFrom() != null) {
+                        String inferredTableName = inferTableNameFromFromClause(subquery.getFrom());
+                        if (inferredTableName != null && occurrenceMap != null) {
+                            String normalizedTableName = inferredTableName.toLowerCase();
+                            Integer mapOccurrence = occurrenceMap.get(normalizedTableName);
+                            if (mapOccurrence != null) {
+                                fixed = ColumnInfo.builder()
+                                        .product(ci.getProduct())
+                                        .database(ci.getDatabase())
+                                        .schema(ci.getSchema())
+                                        .tableName(inferredTableName)
+                                        .columnName(ci.getColumnName())
+                                        .clause(ci.getClause())
+                                        .occurrence(mapOccurrence)
+                                        .build();
+                            }
+                        }
+                    }
+                    else if (ci.getTableName() != null && occurrenceMap != null) {
+                        String normalizedTableName = ci.getTableName().toLowerCase();
+                        Integer mapOccurrence = occurrenceMap.get(normalizedTableName);
+                        if (mapOccurrence != null && !mapOccurrence.equals(ci.getOccurrence())) {
+                            fixed = ColumnInfo.builder()
+                                    .product(ci.getProduct())
+                                    .database(ci.getDatabase())
+                                    .schema(ci.getSchema())
+                                    .tableName(ci.getTableName())
+                                    .columnName(ci.getColumnName())
+                                    .clause(ci.getClause())
+                                    .occurrence(mapOccurrence)
+                                    .build();
+                        }
+                    }
+                    fixedColumns.add(fixed);
+                }
+                columnInfos.addAll(fixedColumns);
+            }
+            return;
+        }
+
+        if (node instanceof SqlBasicCall call) {
+            SqlOperator operator = call.getOperator();
+            if (operator != null) {
+                org.apache.calcite.sql.SqlKind kind = operator.getKind();
+                String opName = operator.getName();
+                
+                if (kind == org.apache.calcite.sql.SqlKind.IN || kind == org.apache.calcite.sql.SqlKind.NOT_IN ||
+                    "IN".equalsIgnoreCase(opName) || "NOT IN".equalsIgnoreCase(opName)) {
+                    List<SqlNode> operands = call.getOperandList();
+                    if (operands.size() >= 2) {
+                        SqlNode rhs = operands.get(1);
+                        if (rhs instanceof SqlSelect) {
+                            extractColumnsFromSubqueriesRecursive(rhs, clauseType, product, columnInfos, occurrenceMap, mainQueryTableCount);
+                            return;
+                        }
+                    }
+                }
+                else if (kind == org.apache.calcite.sql.SqlKind.EXISTS || "EXISTS".equalsIgnoreCase(opName)) {
+                    List<SqlNode> operands = call.getOperandList();
+                    if (!operands.isEmpty()) {
+                        SqlNode operand = operands.get(0);
+                        if (operand instanceof SqlSelect) {
+                            extractColumnsFromSubqueriesRecursive(operand, clauseType, product, columnInfos, occurrenceMap, mainQueryTableCount);
+                            return;
+                        }
+                    }
+                }
+            }
+            
+            for (SqlNode operand : call.getOperandList()) {
+                extractColumnsFromSubqueriesRecursive(operand, clauseType, product, columnInfos, occurrenceMap, mainQueryTableCount);
+            }
+        }
+        else if (node instanceof SqlNodeList nodeList) {
+            for (SqlNode item : nodeList.getList()) {
+                extractColumnsFromSubqueriesRecursive(item, clauseType, product, columnInfos, occurrenceMap, mainQueryTableCount);
+            }
+        }
     }
 
     /**
@@ -389,6 +568,25 @@ public class SelectVisitor extends BaseStatementVisitor {
             var entity = viewId.getEntity();
             if (entity != null) {
                 return entity.getName().getNormalizedName();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Infers table name from a FROM clause node.
+     * Used when column references don't have table qualifiers.
+     */
+    private String inferTableNameFromFromClause(SqlNode from) {
+        if (from instanceof SqlIdentifier id) {
+            return getTableNameFromEntity(id);
+        } else if (from instanceof SqlBasicCall call && 
+                   call.getOperator() != null &&
+                   call.getOperator().getName().equalsIgnoreCase("AS") &&
+                   !call.getOperandList().isEmpty()) {
+            SqlNode tableNode = call.getOperandList().get(0);
+            if (tableNode instanceof SqlIdentifier) {
+                return getTableNameFromEntity((SqlIdentifier) tableNode);
             }
         }
         return null;
