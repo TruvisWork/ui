@@ -1,22 +1,460 @@
-# ------------------------------------------------------------------------------
-# To apply these values, run: terraform apply -var-file="terraform.tfvars"
-# ------------------------------------------------------------------------------
+package com.calcite_new.sql.core.processor.visitor;
 
-# Example override for project ID
-# my_project = "my-awesome-gcp-project-dev"
+import com.calcite_new.sql.core.processor.DefaultQualifiers;
+import com.calcite_new.sql.model.entity.ColumnInfo;
+import com.calcite_new.sql.model.entity.context.clause.JoinClause;
+import com.calcite_new.sql.model.enums.ClauseType;
+import com.calcite_new.sql.model.enums.StatementType;
+import com.calcite_new.sql.parser.BigQuerySqlParser;
+import com.calcite_new.sql.relationextractor.RelationshipExtractor;
+import com.calcite_new.sql.relationextractor.RelationshipType;
+import com.calcite_new.core.dialect.sql.BigQuerySqlDialect;
+import com.calcite_new.core.model.EntityCatalog;
+import com.calcite_new.core.resolver.EntityResolver;
+import org.apache.calcite.sql.*;
+import org.apache.calcite.sql.parser.SqlParserPos;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-# Example override for region
-# region = "us-central1"
+import java.util.List;
 
-# The subnet name for the host VPC
-host_subnet = "my-host-subnet" # You must provide a value for this variable
+import static org.junit.jupiter.api.Assertions.*;
 
-# The GCS bucket where the startup script is located
-startup_script_bucket = "my-startup-script-bucket" # You must provide a value for this variable
+class SqlNodeVisitorTest {
 
-# Static IP for the proxy VM
-ip_static = "10.0.1.10" # You must provide a specific internal IP address
+    private SqlNodeVisitor visitor;
+    private static final String USER = "testUser";
+    private static final String DATABASE = "testDb";
+    private static final String SCHEMA = "foodmart";
+    private static  SqlNodeEnricher enricher;
 
-# Local path to your startup script
-startup_script_local_path = "scripts/extraction_startup.sh"
+    @BeforeEach
+    void setUp() {
+        EntityCatalog entityCatalog = new FoodmartCatalogBuilder()
+                .withProjectName(DATABASE)
+                .withDatasetName(SCHEMA)
+                .build();
+        EntityResolver entityResolver = new EntityResolver(entityCatalog);
+        BigQuerySqlDialect dialect = new BigQuerySqlDialect();
+        RelationshipExtractor relationshipExtractor = new RelationshipExtractor(entityResolver, dialect);
+        visitor = new SqlNodeVisitor(USER, DATABASE, SCHEMA, relationshipExtractor, entityCatalog);
+        enricher = new SqlNodeEnricher(
+                new DefaultQualifiers("test", "foodmart", "stuti"),
+                new BigQuerySqlDialect(),
+                new EntityResolver(entityCatalog)
+        );
+    }
 
+    @Test
+    void testJoinOnStringColumn() throws Exception {
+        String sql = "SELECT a.store_id, b.store_cost FROM foodmart.sales_fact_1997 a " +
+                "JOIN foodmart.sales_fact_1998 b ON a.product_id = b.product_id " +
+                "JOIN foodmart.sales_fact_dec_1998 c ON a.product_id = c.product_id "  +
+                "JOIN foodmart.sales_fact_dec_1999 d ON b.product_id = d.product_id";
+        SqlNode sqlNode = parseSql(sql);
+
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+
+        assertNotNull(result);
+        assertEquals(StatementType.SELECT, result.getStatementType());
+        result.getEntityRelationships().forEach(relationship -> {
+            assertTrue(relationship.getTargetEntity().getEntityName().matches("^(sales_fact_1997|sales_fact_1998|sales_fact_dec_1998|sales_fact_dec_1999)$"),
+                    "Target entity should be one of sales_fact_1997, sales_fact_1998, or sales_fact_dec_1998, or sales_fact_dec_1999");
+        });
+
+        long joinCount = result.getEntityRelationships().stream()
+                .filter(rel -> rel.getRelationshipType() == RelationshipType.JOINS)
+                .count();
+        assertEquals(3, joinCount, "Should create join relationships for each join clause");
+
+        // Check joins
+     /*   assertNotNull(result.getContext().getJoinClauses(), "Join clauses should not be null");
+        assertEquals(3, result.getContext().getJoinClauses().size(), "Should have 3 join clauses");*/
+    }
+
+    @Test
+    void testInsertStatement() throws Exception {
+        String sql = "INSERT INTO target_table (col1, col2) SELECT col1, col2 FROM source_table";
+        SqlNode sqlNode = parseSql(sql);
+
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+
+        assertNotNull(result);
+        assertEquals(StatementType.INSERT, result.getStatementType());
+    }
+
+    @Test
+    void testDeleteStatement() throws Exception {
+        String sql = "DELETE FROM table1 WHERE TRUE";
+        SqlNode sqlNode = parseSql(sql);
+
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+
+        assertNotNull(result);
+        assertEquals(StatementType.DELETE, result.getStatementType());
+
+    }
+    /**
+     * <b>Update statement Test-Cases</b>
+     * @throws Exception
+     */
+    @Test
+    void testUpdateStatementMultipleTable() throws Exception {
+        String sql = "UPDATE foodmart.sales_fact_1997 SET store_sales = 100.00 WHERE store_id IN (SELECT s1.store_id FROM foodmart.sales_fact_1998 s1 JOIN foodmart.store s2 ON s1.store_id = s2.store_id WHERE s2.store_type = 'Supermarket')";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        assertEquals(StatementType.UPDATE, result.getStatementType());
+        assertEquals(6, result.getEntityRelationships().size());
+
+        assertEquals(2, result.getSourceTables().size());
+        assertTrue(result.getEntityRelationships().stream()
+                .anyMatch(relationship -> relationship.getRelationshipType() == RelationshipType.ACCESSES));
+        assertEquals(2, result.getEntityRelationships().stream()
+                .filter(relationship -> relationship.getRelationshipType() == RelationshipType.DEPENDS_ON)
+                .count());
+        assertEquals(1, result.getEntityRelationships().stream()
+                .filter(relationship -> relationship.getRelationshipType() == RelationshipType.JOINS)
+                .count());
+    }
+
+    @Test
+    void testUpdateStatementSingleTable() throws Exception {
+        String sql = "UPDATE users SET status = 'active' WHERE id = 101";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        assertEquals(StatementType.UPDATE, result.getStatementType());
+        // Always expect one source table in update
+        assertEquals(0, result.getSourceTables().size());
+        // Always expected one relationship in update
+        assertEquals(1, result.getEntityRelationships().size());
+
+        assertTrue(result.getEntityRelationships().stream()
+                .anyMatch(relationship -> relationship.getRelationshipType() == RelationshipType.ACCESSES));
+
+        assertFalse(
+             result.getEntityRelationships().stream()
+              .anyMatch(relationship -> relationship.getRelationshipType() == RelationshipType.DEPENDS_ON));
+
+    }
+
+    @Test
+    void testUpdateStatementSelfJoin() throws Exception {
+        String sql =
+                "UPDATE employees e1 SET manager_id = NULL WHERE EXISTS ( SELECT 1 FROM employees e2  WHERE e1.id = e2.manager_id  AND e2.status = 'terminated')";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        assertEquals(StatementType.UPDATE, result.getStatementType());
+        assertEquals(1, result.getSourceTables().size());
+        assertEquals(1, result.getEntityRelationships().size());
+        assertTrue(result.getEntityRelationships().stream()
+                .anyMatch(relationship -> relationship.getRelationshipType() == RelationshipType.ACCESSES));
+    }
+
+    @Test
+    void testUpdateTableFromAnotherTable() throws Exception {
+        String sql =
+                "UPDATE employees e1 SET manager_id = NULL WHERE EXISTS ( SELECT 1 FROM temployees e2  WHERE e1.id = e2.manager_id  AND e2.status = 'terminated')";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        assertEquals(StatementType.UPDATE, result.getStatementType());
+        assertEquals(1, result.getSourceTables().size());
+        assertEquals(3, result.getEntityRelationships().size());
+        assertTrue(result.getEntityRelationships().stream()
+                .anyMatch(relationship -> relationship.getRelationshipType() == RelationshipType.ACCESSES));
+
+        assertTrue(
+                result.getEntityRelationships().stream()
+                        .anyMatch(relationship -> relationship.getRelationshipType() == RelationshipType.DEPENDS_ON));
+    }
+
+
+    @Test
+    void testNullCall() {
+        SqlNodeVisitor.Result result = visitor.visit((SqlCall) null);
+
+        assertNotNull(result);
+        assertTrue(result.getEntityRelationships().isEmpty());
+        assertTrue(result.getSourceTables().isEmpty());
+    }
+
+    @Test
+    void testIdentifierVisit() {
+        SqlIdentifier identifier = new SqlIdentifier("columnName", SqlParserPos.ZERO);
+        SqlNodeVisitor.Result result = visitor.visit(identifier);
+
+        assertNotNull(result);
+        assertTrue(result.getEntityRelationships().isEmpty());
+        assertTrue(result.getSourceTables().isEmpty());
+    }
+
+    @Test
+    void testMergeResults() {
+        SqlNodeVisitor.Result main = new SqlNodeVisitor.Result();
+        SqlNodeVisitor.Result other = new SqlNodeVisitor.Result();
+
+        other.getSourceTables().add(new SqlIdentifier("table1", SqlParserPos.ZERO));
+
+        SqlNodeVisitor.mergeResults(main, other);
+
+        assertEquals(1, main.getSourceTables().size());
+    }
+
+    @Test
+    void testOrderByInFromSubquerySetsFlag() throws Exception {
+        String sql = "SELECT * FROM (SELECT id FROM table1 ORDER BY id) t";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        assertNotNull(result.getContext().getOrderByClause(), "OrderByClause should not be null if ORDER BY is in subquery");
+        assertTrue(result.getContext().getOrderByClause().getIsOderByInsideSubQuery(), "isInsideSubQuery flag should be true when ORDER BY is in subquery");
+    }
+
+    @Test
+    void testOrderByInNestedSubquerySetsFlag() throws Exception {
+        String sql = "SELECT * FROM (SELECT id FROM (SELECT id FROM table1 ORDER BY id) t1) t2";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        assertNotNull(result.getContext().getOrderByClause(), "OrderByClause should not be null if ORDER BY is in nested subquery");
+        assertTrue(result.getContext().getOrderByClause().getIsOderByInsideSubQuery(), "isInsideSubQuery flag should be true when ORDER BY is in nested subquery");
+    }
+
+    @Test
+    void testOrderByInBothOuterAndInnerSubqueries() throws Exception {
+        String sql = "SELECT * FROM (SELECT id FROM (SELECT id FROM table1 ORDER BY id) t1 ORDER BY id) t2";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        assertNotNull(result.getContext().getOrderByClause(), "OrderByClause should not be null if ORDER BY is in subqueries");
+        assertTrue(result.getContext().getOrderByClause().getIsOderByInsideSubQuery(), "isInsideSubQuery flag should be true when ORDER BY is in subquery");
+    }
+
+    @Test
+    void testOrderByOnlyInOuterSubquery() throws Exception {
+        String sql = "SELECT * FROM (SELECT id FROM (SELECT id FROM table1) t1 ORDER BY id) t2";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        assertNotNull(result.getContext().getOrderByClause(), "OrderByClause should not be null if ORDER BY is in outer subquery");
+        assertTrue(result.getContext().getOrderByClause().getIsOderByInsideSubQuery(), "isInsideSubQuery flag should be true when ORDER BY is in subquery");
+    }
+
+    @Test
+    void testNoOrderByInSubqueries() throws Exception {
+        String sql = "SELECT * FROM (SELECT id FROM (SELECT id FROM table1) t1) t2";
+        SqlNode sqlNode = parseSql(sql);
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+        // Should be null or false if there is no ORDER BY
+        assertTrue(result.getContext().getOrderByClause() == null || !result.getContext().getOrderByClause().getIsOderByInsideSubQuery(), "OrderByClause should be null or flag false if no ORDER BY in subquery");
+    }
+
+    @Test
+    void testJoinColumnsSingleEquality() throws Exception {
+        String sql = "SELECT a.store_id, b.store_cost FROM foodmart.sales_fact_1997 a " +
+                "JOIN foodmart.sales_fact_1998 b ON a.product_id = b.product_id";
+        SqlNode sqlNode = parseSql(sql);
+
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+/*        assertNotNull(result.getContext().getJoinClauses());
+        assertEquals(1, result.getContext().getJoinClauses().size(), "Should have 1 join clause");*/
+
+        var joinColumns = result.getColumnInfos().stream()
+                .filter(ci -> ci.getClause() == ClauseType.JOIN)
+                .toList();
+        assertEquals(2, joinColumns.size(), "Single equality join should capture two column entries (left and right)");
+
+        boolean has1997 = joinColumns.stream().anyMatch(c -> "sales_fact_1997".equals(c.getTableName()) && "product_id".equals(c.getColumnName()));
+        boolean has1998 = joinColumns.stream().anyMatch(c -> "sales_fact_1998".equals(c.getTableName()) && "product_id".equals(c.getColumnName()));
+        assertTrue(has1997, "Join columns should include sales_fact_1997.product_id");
+        assertTrue(has1998, "Join columns should include sales_fact_1998.product_id");
+    }
+
+    @Test
+    void testJoinColumnsMultiColumnAnd() throws Exception {
+        String sql = "SELECT * FROM foodmart.sales_fact_1997 a " +
+                "JOIN foodmart.sales_fact_1998 b ON a.product_id = b.product_id AND a.store_id = b.store_id";
+        SqlNode sqlNode = parseSql(sql);
+
+        SqlNodeVisitor.Result result = sqlNode.accept(visitor);
+        assertNotNull(result);
+  /*      assertNotNull(result.getContext().getJoinClauses());
+        assertEquals(1, result.getContext().getJoinClauses().size(), "Should have 1 join clause");*/
+
+        var joinColumns = result.getColumnInfos().stream()
+                .filter(ci -> ci.getClause() == ClauseType.JOIN)
+                .toList();
+        assertEquals(4, joinColumns.size(), "ANDed two-column join should report 4 entries (2 per side)");
+
+        String[] tables = {"sales_fact_1997", "sales_fact_1998"};
+        String[] cols = {"product_id", "store_id"};
+        for (String t : tables) {
+            for (String c : cols) {
+                boolean present = joinColumns.stream().anyMatch(jc -> t.equals(jc.getTableName()) && c.equals(jc.getColumnName()));
+                assertTrue(present, "Expected join column present: " + t + "." + c);
+            }
+        }
+
+        long joinRelationships = result.getEntityRelationships().stream()
+                .filter(rel -> rel.getRelationshipType() == RelationshipType.JOINS)
+                .count();
+        assertEquals(1, joinRelationships, "Should only create one join relationship for two-table join");
+    }
+
+    @Test
+    void testTableOccurrenceTracking() throws Exception {
+        // Same table used in main query and subquery with different filters
+        // Columns from main query should have occurrence 1, columns from subquery should have occurrence 2
+        String sql = "SELECT product_id, store_sales " +
+                "FROM foodmart.sales_fact_1997 " +
+                "WHERE store_sales > 100 " +
+                "AND product_id IN (SELECT product_id FROM foodmart.sales_fact_1997 WHERE store_cost < 50)";
+        SqlNode sqlNode = parseSql(sql);
+
+        SqlNode enrichedSqlNode = sqlNode.accept(enricher);
+        SqlNodeVisitor.Result result = enrichedSqlNode.accept(visitor);
+
+        assertNotNull(result);
+        assertEquals(StatementType.SELECT, result.getStatementType());
+
+        // Verify that the same table appears multiple times in sourceTables
+        assertTrue(result.getSourceTables().size() >= 2,
+                "Same table should appear at least twice in sourceTables (main query + subquery)");
+
+        // Get all column infos
+        List<ColumnInfo> allColumns = result.getColumnInfos();
+        assertFalse(allColumns.isEmpty(), "Should have column infos");
+
+        // Verify WHERE clause columns from main query and subquery have different occurrences
+        List<ColumnInfo> whereColumns = allColumns.stream()
+                .filter(ci -> ci.getClause() == ClauseType.WHERE)
+                .filter(ci -> "sales_fact_1997".equalsIgnoreCase(ci.getTableName()))
+                .toList();
+
+        assertFalse(whereColumns.isEmpty(), "Should have WHERE clause columns from sales_fact_1997");
+
+        // At least one column should have occurrence > 1
+        // Main query columns should have occurrence 1, subquery columns should have occurrence 2
+        boolean hasOccurrenceGreaterThanOne = whereColumns.stream()
+                .anyMatch(ci -> ci.getOccurrence() != null && ci.getOccurrence() > 1);
+
+        assertTrue(hasOccurrenceGreaterThanOne,
+                "At least one column should have occurrence > 1 when same table appears in main query and subquery. " +
+                "Found WHERE clause occurrences: " + whereColumns.stream()
+                        .map(ci -> String.format("%s.%s=%d", ci.getTableName(), ci.getColumnName(), ci.getOccurrence()))
+                        .toList());
+
+        // Verify we have columns with occurrence 1 (from main query)
+        boolean hasOccurrenceOne = whereColumns.stream()
+                .anyMatch(ci -> ci.getOccurrence() != null && ci.getOccurrence() == 1);
+
+        assertTrue(hasOccurrenceOne,
+                "Should have at least one column with occurrence 1 (from main query). " +
+                "Found occurrences: " + whereColumns.stream()
+                        .map(ci -> String.format("%s.%s=%d", ci.getTableName(), ci.getColumnName(), ci.getOccurrence()))
+                        .toList());
+
+        // Debug output: print all column infos with their occurrences
+        System.out.println("=== Column Occurrence Debug ===");
+        System.out.println("Total sourceTables: " + result.getSourceTables().size());
+        allColumns.forEach(ci -> System.out.println(
+                String.format("Clause: %s, Table: %s, Column: %s, Occurrence: %s",
+                        ci.getClause(), ci.getTableName(), ci.getColumnName(), ci.getOccurrence())));
+    }
+
+    @Test
+    void testComplexInsertWithMultipleEventStoreOccurrences() throws Exception {
+        // Set up catalog using ProcQueriesTestCatalogBuilder
+        EntityCatalog entityCatalog = new ProcQueriesTestCatalogBuilder()
+                .withProjectName("test")
+                .build();
+        EntityResolver entityResolver = new EntityResolver(entityCatalog);
+        BigQuerySqlDialect dialect = new BigQuerySqlDialect();
+        RelationshipExtractor relationshipExtractor = new RelationshipExtractor(entityResolver, dialect);
+        SqlNodeVisitor testVisitor = new SqlNodeVisitor(USER, "test", "amh_fz_fdr_dev_sit", relationshipExtractor, entityCatalog);
+        SqlNodeEnricher testEnricher = new SqlNodeEnricher(
+                new DefaultQualifiers("test", "amh_fz_fdr_dev_sit", USER),
+                new BigQuerySqlDialect(),
+                entityResolver
+        );
+
+        String sql = "INSERT INTO AMH_FZ_REPORT_MARTS_TABLES_DEV.Payment_Mart (report_name, create_timestamp, action_on_alert_timestamp, result_on_alert_timestamp, entity, portfolio, channel, class, final_portfolio, statemachineID, final_state, payment_source, transaction_status, sender_transaction_currency, number_of_payment_customers, sum_of_transaction_amount_usd, sum_of_transaction_original_amount, count_of_transactions, count_of_alerts, sum_of_transaction_amount_by_alerts, number_of_alerted_customers, sum_of_transaction_original_amount_by_alerts, sum_of_transaction_amount_gbp, sum_of_transaction_amount_gbp_by_alerts, lob, load_datetime) " +
+                "(SELECT \"Payment MI EOD\" AS report_name, final_set11.create_timestamp AS create_timestamp, final_set11.action_on_alert_timestamp AS action_on_alert_timestamp, final_set11.result_on_alert_timestamp AS result_on_alert_timestamp, final_set11.entity AS entity, final_set11.portfolio AS portfolio, CASE WHEN LOWER(final_set1.channel) = 'c' THEN 'Payment Card at Card Reader Terminal (including online purchase and ATM)' WHEN LOWER(final_set1.channel) = 'd' THEN 'Payment Card or Number with Online Details and Device Fingerprint Information' WHEN LOWER(final_set1.channel) = 'e' THEN 'Payment Card or Number with Online Details' WHEN LOWER(final_set1.channel) = 'o' THEN 'Online Banking (internet, mobile phone)' WHEN LOWER(final_set1.channel) = 'w' THEN 'Online Banking with device fingerprint information' WHEN LOWER(final_set1.channel) = 'p' THEN 'Phone Banking' WHEN LOWER(final_set1.channel) = 'h' THEN 'Self Bank Branch' WHEN LOWER(final_set1.channel) = 'm' THEN 'Correspondence(for non-mon and check deposit)' WHEN LOWER(final_set1.channel) = 'b' THEN 'Bank Processing(include bank initiated non-mon maintenance, ACH debit, EFT processing)' WHEN LOWER(final_set1.channel) = 'f' THEN 'Financial Consultant' WHEN LOWER(final_set1.channel) = 'r' THEN 'Other' WHEN LOWER(final_set1.channel) = 's' THEN 'Merchant - Acquirer Processing with Device Fingerprint' WHEN LOWER(final_set1.channel) = 't' THEN 'Merchant - Acquirer Processing' WHEN LOWER(final_set1.channel) = 'u' THEN 'Unknown' WHEN LOWER(final_set1.channel) = 'n' THEN 'NA' ELSE final_set1.channel END AS channel, final_set1.class AS class, final_set1.final_portfolio AS final_portfolio, final_set1.statemachineID AS statemachineID, final_set1.final_state AS final_state, final_set1.payment_source AS payment_source, final_set1.transaction_status AS transaction_status, final_set1.sender_transaction_currency AS sender_transaction_currency, final_set1.number_of_payment_customers AS number_of_payment_customers, final_set1.sum_of_transaction_amount_hkd AS sum_of_transaction_amount_usd, final_set1.sum_of_transaction_original_amount AS sum_of_transaction_original_amount, final_set1.count_of_transactions AS count_of_transactions, final_set1.count_of_alerts AS count_of_alerts, final_set1.sum_of_transaction_amount_by_alerts AS sum_of_transaction_amount_by_alerts, final_set1.number_of_alerted_customers AS number_of_alerted_customers, final_set1.sum_of_transaction_original_amount_by_alerts AS sum_of_transaction_original_amount_by_alerts, final_set1.sum_of_transaction_amount_gbp AS sum_of_transaction_amount_gbp, final_set1.sum_of_transaction_amount_gbp_by_alerts AS sum_of_transaction_amount_gbp_by_alerts, lob, TIMESTAMP('2025-10-06 16:00:00+00') AS load_datetime " +
+                "FROM (SELECT TIMESTAMP_TRUNC(TIMESTAMP_ADD(TIMESTAMP_MILLIS(cm_event_arrival.id.timestamp),INTERVAL 8 hour),day) AS create_timestamp, NULLIF(TIMESTAMP_TRUNC(GREATEST(COALESCE(TIMESTAMP_MILLIS(cm_event_assignee_update.updatedAt),'1970-01-01 00:00:00 UTC'),COALESCE(TIMESTAMP_MILLIS(cm_event_state_updates.updatedAt),'1970-01-01 00:00:00 UTC'),COALESCE(TIMESTAMP(cm_event_arrival.timestamp),'1970-01-01 00:00:00 UTC'),COALESCE(TIMESTAMP(cm_event_queue_changed.timestamp),'1970-01-01 00:00:00 UTC')), hour), '1970-01-01 00:00:00') AS action_on_alert_timestamp, CASE WHEN LOWER(cm_event_state_updates.state.id)=\"genuine\" OR LOWER(cm_event_state_updates.state.id)=\"fraud\" THEN TIMESTAMP_TRUNC(TIMESTAMP_MILLIS(cm_event_state_updates.updatedAt), hour) END AS result_on_alert_timestamp, cm_event_arrival.id.payload.schema.customer_portfolio_region AS entity, cm_event_arrival.id.payload.schema.customer_portfolio_country AS portfolio, event_store.channel_type AS channel, cm_event_arrival.id.payload.schema.customer_portfolio_class AS class, CASE WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'cd' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class)='pers' THEN 'CIIOM WPB' WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'cd' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class)='buss' THEN 'CIIOM CMB' WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'ms' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class)='pers' THEN 'M&S WPB' WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'fd' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class)='pers' THEN 'First Direct WPB' WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'uk' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class)='pers' THEN 'Red Brand WPB' WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'uk' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class)='buss' THEN 'Red Brand CMB' WHEN LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_country) = 'uk' AND LOWER(cm_event_arrival.id.payload.schema.customer_portfolio_class)='priv' THEN 'Red Brand GPB' END AS final_portfolio, cm_event_state_updates.statemachineid AS statemachineID, cm_event_state_updates_status.state.id AS final_state, event_store.source AS payment_source, CASE WHEN JSON_EXTRACT_SCALAR(event_store.outcomes_and_scores,\"$.decision.outcomeDecision\") = \"approve\" THEN \"approved\" WHEN JSON_EXTRACT_SCALAR(event_store.outcomes_and_scores,\"$.decision.outcomeDecision\")=\"review\" THEN \"review\" WHEN JSON_EXTRACT_SCALAR(event_store.outcomes_and_scores,\"$.decision.outcomeDecision\")=\"decline\" THEN \"declined\" END AS transaction_status, event_store.sender_transaction_currency AS sender_transaction_currency, COUNT(DISTINCT event_store.customer_id) AS number_of_payment_customers, SUM(event_store.sender_transaction_amount_dbl) AS sum_of_transaction_amount_hkd, SUM(event_store.sender_transaction_amount_dbl) AS sum_of_transaction_amount_gbp, SUM(CAST(event_store.sender_transaction_amount_dbl AS numeric)*100) AS sum_of_transaction_original_amount, COUNT(DISTINCT cm_event_arrival_alert.id.identifier) AS count_of_alerts, COUNT(DISTINCT cm_event_arrival.id.identifier) AS count_of_transactions, SUM(event_store_alert.sender_transaction_amount_dbl) AS sum_of_transaction_amount_by_alerts, COUNT(DISTINCT event_store_alert.customer_id) AS number_of_alerted_customers, SUM(CAST(event_store_alert.sender_transaction_amount_dbl AS numeric)*100) AS sum_of_transaction_original_amount_by_alerts, SUM(event_store_alert.sender_transaction_amount_dbl) AS sum_of_transaction_amount_gbp_by_alerts, CASE WHEN (LOWER(event_store.payment_message_source) IN (\"hk_gpb_mob\", \"hk_gpb_web\") AND LOWER(event_store.segment_channel_type) = 'w' AND LOWER(event_store.fdz_channel) = 'transfers' AND LOWER(event_store.event_type) = 'transfer_initiation' AND (LOWER(event_store.entity_type) != 'b' OR event_store.entity_type IS NULL) AND LOWER(event_store.payment_revision_code) = 'o' AND LOWER(event_store.top_payee_payer) IN ('e', 'b', 'n', 'd')) OR (LOWER(event_store.channel_name) = 'l' AND LOWER(event_store.sender_transaction_type) = 'bt') THEN 'GPB' ELSE (CASE WHEN (LOWER(COALESCE(event_store.customer_type,event_store_alert.customer_type)) = 'b' AND LOWER(SUBSTR(COALESCE(event_store.customer_id_number,event_store_alert.customer_id_number),1,2)) NOT IN ('xw', 'xk', 'xc')) THEN \"WSB\" WHEN (LOWER(COALESCE(event_store.customer_type,event_store_alert.customer_type)) = 'i' OR (LOWER(COALESCE(event_store.customer_type,event_store_alert.customer_type)) = 'b' AND LOWER(SUBSTR(COALESCE(event_store.customer_id_number,event_store_alert.customer_id_number),1,2)) IN ('xw', 'xk', 'xc'))) THEN \"WPB\" END) END AS lob " +
+                "FROM (SELECT * FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY id.identifier ORDER BY TIMESTAMP(cm_event_arrival.timestamp) ASC) AS rownum FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival WHERE updatedTimestamp>= '2025-10-06 16:00:00+00' AND TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-10-06 16:00:00+00') AND TIMESTAMP_MILLIS(id.timestamp) <TIMESTAMP('2025-10-06 16:00:00+00')) WHERE rownum=1) cm_event_arrival " +
+                "LEFT JOIN (SELECT * FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY lifecycle_id ORDER BY event_occurred_at ASC) AS row_num FROM AMH_FZ_FDR_DEV_SIT.event_store WHERE LOWER(event_type) IN ('transfer_initiation', 'feedback') AND JSON_EXTRACT_SCALAR(outcomes_and_scores,\"$.decision.outcomeDecision\") IN ('approve', 'decline', 'review') AND bq_insert_timestamp>='2025-10-06 16:00:00+00') WHERE row_num = 1) event_store ON cm_event_arrival.id.identifier = event_store.lifecycle_id " +
+                "LEFT JOIN (SELECT * FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY id.identifier ORDER BY TIMESTAMP(cm_event_arrival.timestamp) ASC) AS rownum FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival WHERE TIMESTAMP_MILLIS(id.timestamp) >= TIMESTAMP('2025-10-06 16:00:00+00') AND TIMESTAMP_MILLIS(id.timestamp) <TIMESTAMP('2025-10-06 16:00:00+00') AND updatedTimestamp>='2025-10-06 16:00:00+00' AND alert=TRUE) WHERE rownum=1) cm_event_arrival_alert ON cm_event_arrival.id.identifier=cm_event_arrival_alert.id.identifier " +
+                "LEFT JOIN (SELECT * FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY lifecycle_id ORDER BY bq_insert_timestamp ASC) AS row_num FROM AMH_FZ_FDR_DEV_SIT.event_store WHERE LOWER(event_type) IN ('transfer_initiation')) WHERE row_num = 1) event_store_alert ON cm_event_arrival_alert.id.identifier = event_store_alert.lifecycle_id " +
+                "LEFT JOIN (SELECT * FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY updatedAt DESC) AS rownum FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates LEFT JOIN UNNEST(ids) WHERE updatedTimestamp>='2025-10-06 16:00:00+00' AND LOWER(state.id) NOT IN (\"closed\") AND LOWER(channelId) IN (\"transfers\") AND LOWER(statemachineid) NOT IN ('breach_status', 'decision', 'status_digital_activity', 'status_transfers', 'transfer_status', 'operational_status')) WHERE rownum=1) cm_event_state_updates ON cm_event_arrival.id.identifier = cm_event_state_updates.identifier " +
+                "LEFT JOIN (SELECT * FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY updatedAt DESC) AS rownum FROM AMH_FZ_FDR_DEV_SIT.cm_event_state_updates LEFT JOIN UNNEST(ids) WHERE LOWER(stateMachineId) = 'status' AND TIMESTAMP_MILLIS(updatedAt)>='2025-10-06 16:00:00+00' AND updatedTimestamp>='2025-10-06 16:00:00+00' AND TIMESTAMP_MILLIS(updatedAt)<='2025-10-06 16:00:00+00') WHERE rownum=1) cm_event_state_updates_status ON cm_event_arrival.id.identifier = cm_event_state_updates_status.identifier " +
+                "LEFT JOIN (SELECT * FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY updatedAt DESC) AS rownum FROM AMH_FZ_FDR_DEV_SIT.cm_event_assignee_update LEFT JOIN UNNEST(ids) WHERE updatedTimestamp>='2025-10-06 16:00:00+00') WHERE rownum=1) cm_event_assignee_update ON cm_event_arrival.id.identifier = cm_event_assignee_update.identifier " +
+                "LEFT JOIN (SELECT * FROM (SELECT cm_event_queue_changed.timestamp AS timestamp, identifier, ROW_NUMBER() OVER(PARTITION BY identifier ORDER BY TIMESTAMP(cm_event_queue_changed.timestamp) DESC) AS rownum FROM AMH_FZ_FDR_DEV_SIT.cm_event_queue_changed LEFT JOIN UNNEST(ids) WHERE updatedTimestamp>='2025-10-06 16:00:00+00') WHERE rownum=1) cm_event_queue_changed ON cm_event_arrival.id.identifier = cm_event_queue_changed.identifier " +
+                "LEFT JOIN (SELECT event_store_rule.lifecycle_id, STRING_AGG(rules_metadata.name) AS rule_metadata_names FROM (SELECT event_store.lifecycle_id, TRIM(rules_split) AS rules_triggered FROM (SELECT * FROM (SELECT *, ROW_NUMBER() OVER(PARTITION BY id.identifier ORDER BY TIMESTAMP(cm_event_arrival.timestamp) ASC) AS rownum FROM AMH_FZ_FDR_DEV_SIT.cm_event_arrival WHERE LOWER(id.payload.schema.event_type) IN ('transfer_initiation', 'feedback', 'info') AND updatedTimestamp >= TIMESTAMP('2025-10-06 16:00:00+00') AND updatedTimestamp <TIMESTAMP('2025-10-06 16:00:00+00')) WHERE rownum=1) cm_event_arrival INNER JOIN (SELECT * FROM (SELECT * FROM ((SELECT *, ROW_NUMBER() OVER(PARTITION BY lifecycle_id ORDER BY event_occurred_at DESC) AS row_num FROM AMH_FZ_FDR_DEV_SIT.event_store WHERE bq_insert_timestamp>='2025-10-06 16:00:00+00') LEFT JOIN UNNEST(SPLIT(rules_triggered,';')) AS rules_split) WHERE LOWER(event_type) IN ('transfer_initiation', 'feedback')) WHERE row_num = 1) event_store ON cm_event_arrival.id.identifier = event_store.lifecycle_id) event_store_rule INNER JOIN (SELECT id, name FROM AMH_FZ_FDR_DEV_SIT.workflow_rules_vw) rules_metadata ON event_store_rule.rules_triggered=rules_metadata.id GROUP BY event_store_rule.lifecycle_id) rules ON rules.lifecycle_id=cm_event_arrival.id.identifier " +
+                "LEFT JOIN AMH_FZ_FDR_DEV_SIT.workflow_rules_vw ON event_store.rules_triggered = workflow_rules_vw.id " +
+                "WHERE LOWER(cm_event_arrival.id.channelId) IN ('transfers') " +
+                "GROUP BY create_timestamp, action_on_alert_timestamp, result_on_alert_timestamp, entity, portfolio, channel, lob, class, final_portfolio, statemachineID, final_state, payment_source, transaction_status, sender_transaction_currency) final_set1)";
+
+        SqlNode sqlNode = parseSql(sql);
+        SqlNode enrichedSqlNode = sqlNode.accept(testEnricher);
+        SqlNodeVisitor.Result result = enrichedSqlNode.accept(testVisitor);
+
+        assertNotNull(result);
+        assertEquals(StatementType.INSERT, result.getStatementType());
+
+        // Check that event_store appears in sourceTables
+        long eventStoreTableCount = result.getSourceTables().stream()
+                .filter(tableId -> {
+                    String tableName = getTableNameFromIdentifier(tableId);
+                    return "event_store".equalsIgnoreCase(tableName);
+                })
+                .count();
+
+        assertTrue(eventStoreTableCount >= 1,
+                "event_store should appear at least once in sourceTables. Found: " + eventStoreTableCount);
+
+        // Check that event_store has occurrence 2 in column infos
+        List<ColumnInfo> eventStoreColumns = result.getColumnInfos().stream()
+                .filter(ci -> "event_store".equalsIgnoreCase(ci.getTableName()))
+                .toList();
+
+        assertFalse(eventStoreColumns.isEmpty(),
+                "Should have column infos for event_store table");
+
+        // Check if event_store appears with occurrence 2 (it appears in multiple subqueries in JOINs)
+        boolean hasOccurrenceTwo = eventStoreColumns.stream()
+                .anyMatch(ci -> ci.getOccurrence() != null && ci.getOccurrence() == 2);
+
+        assertTrue(hasOccurrenceTwo,
+                "event_store should have occurrence 2 when it appears in multiple subqueries. " +
+                "Found occurrences: " + eventStoreColumns.stream()
+                        .map(ci -> String.format("%s.%s=%d", ci.getTableName(), ci.getColumnName(), ci.getOccurrence()))
+                        .distinct()
+                        .toList());
+
+        // Debug output
+        System.out.println("=== Complex INSERT Test Debug ===");
+        System.out.println("Total sourceTables: " + result.getSourceTables().size());
+        System.out.println("event_store table count in sourceTables: " + eventStoreTableCount);
+        System.out.println("event_store column infos: " + eventStoreColumns.size());
+        eventStoreColumns.forEach(ci -> System.out.println(
+                String.format("Table: %s, Column: %s, Clause: %s, Occurrence: %s",
+                        ci.getTableName(), ci.getColumnName(), ci.getClause(), ci.getOccurrence())));
+    }
+
+    private String getTableNameFromIdentifier(SqlIdentifier id) {
+        if (id.names != null && !id.names.isEmpty()) {
+            return id.names.get(id.names.size() - 1);
+        }
+        return null;
+    }
+
+    private SqlNode parseSql(String sql) throws Exception {
+        BigQuerySqlParser parser = new BigQuerySqlParser();
+        return parser.parse(sql);
+    }
+}
