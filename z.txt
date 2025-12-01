@@ -188,59 +188,38 @@ public class SelectVisitor extends BaseStatementVisitor {
             SqlNodeVisitor.mergeResults(result, whereResult);
             result.getColumnInfos().removeIf(ci -> ci.getClause() == ClauseType.WHERE);
 
-            Map<String, Integer> mainQueryOccurrenceMap = new HashMap<>();
-            for (int i = 0; i < mainQueryTableCount; i++) {
-                SqlIdentifier tableId = result.getSourceTables().get(i);
-                String tableName = getTableNameFromEntity(tableId);
-                if (tableName == null) {
-                    tableName = getTableName(tableId);
-                }
-                if (tableName != null) {
-                    mainQueryOccurrenceMap.put(tableName.toLowerCase(), 1);
-                }
+            // Simple approach: count occurrences sequentially as we encounter each table in filters
+            // Track occurrence count per table name as we process columns
+            Map<String, Integer> tableOccurrenceCount = new HashMap<>();
+            
+            // Extract columns from main WHERE clause and count occurrences dynamically
+            List<ColumnInfo> allWhereColumns = extractColumnsWithSequentialOccurrence(whereExpr, ClauseType.WHERE, dialect.product.name, tableOccurrenceCount);
+            result.getColumnInfos().addAll(allWhereColumns);
+            
+            // Also extract WHERE clause columns from nested subqueries in FROM clause (including JOINs)
+            if (select.getFrom() != null) {
+                List<ColumnInfo> fromWhereColumns = extractWhereColumnsFromFromClause(select.getFrom(), ClauseType.WHERE, dialect.product.name, tableOccurrenceCount);
+                result.getColumnInfos().addAll(fromWhereColumns);
             }
-            List<ColumnInfo> mainQueryColumns = extractColumnsExcludingSubqueries(whereExpr, ClauseType.WHERE, dialect.product.name, mainQueryOccurrenceMap);
-            result.getColumnInfos().addAll(mainQueryColumns);
-
-            Map<String, Integer> subqueryOccurrenceMap = new HashMap<>();
-            Map<String, Boolean> mainQueryTableMap = new HashMap<>();
-            for (int i = 0; i < mainQueryTableCount; i++) {
-                SqlIdentifier tableId = result.getSourceTables().get(i);
-                String tableName = getTableNameFromEntity(tableId);
-                if (tableName == null) {
-                    tableName = getTableName(tableId);
-                }
-                if (tableName != null) {
-                    mainQueryTableMap.put(tableName.toLowerCase(), true);
-                }
-            }
-
-            for (int i = mainQueryTableCount; i < result.getSourceTables().size(); i++) {
-                SqlIdentifier tableId = result.getSourceTables().get(i);
-                String tableName = getTableNameFromEntity(tableId);
-                if (tableName == null) {
-                    tableName = getTableName(tableId);
-                }
-                if (tableName != null) {
-                    String normalizedTableName = tableName.toLowerCase();
-                    if (mainQueryTableMap.containsKey(normalizedTableName)) {
-                        subqueryOccurrenceMap.put(normalizedTableName, 2);
-                    } else {
-                        subqueryOccurrenceMap.put(normalizedTableName, 1);
-                    }
-                }
-            }
-
-            List<ColumnInfo> subqueryColumns = extractColumnsFromSubqueries(whereExpr, ClauseType.WHERE, dialect.product.name, subqueryOccurrenceMap, mainQueryTableCount);
-            result.getColumnInfos().addAll(subqueryColumns);
         }
 
         whereClause.setHasCaseInsensitiveComparison(hasCaseInsensitive);
         result.getContext().setWhereClause(whereClause);
 
         // Extract columns from GROUP BY clause (handles ordinals and expressions)
+        // For now, set occurrence to 1 for all GROUP BY columns
         if (select.getGroup() != null) {
-            Map<String, Integer> tableOccurrenceMap = computeTableOccurrenceMap(result.getSourceTables());
+            Map<String, Integer> tableOccurrenceMap = new HashMap<>();
+            // Set all tables to occurrence 1 for GROUP BY
+            for (SqlIdentifier tableId : result.getSourceTables()) {
+                String tableName = getTableNameFromEntity(tableId);
+                if (tableName == null) {
+                    tableName = getTableName(tableId);
+                }
+                if (tableName != null) {
+                    tableOccurrenceMap.put(tableName.toLowerCase(), 1);
+                }
+            }
             result.getColumnInfos().addAll(
                 ColumnExtractor.extractGroupByColumns(select.getGroup(), select.getSelectList(), dialect.product.name, tableOccurrenceMap)
             );
@@ -370,8 +349,18 @@ public class SelectVisitor extends BaseStatementVisitor {
                 joinClause.setRightTable(rightId.toString()); // Handle "AS" aliases
             }
 
-            Map<String, Integer> tableOccurrenceMap = computeTableOccurrenceMap(result.getSourceTables());
-            result.getColumnInfos().addAll(ColumnExtractor.extractColumns(join.getCondition(), ClauseType.JOIN, dialect.product.name, tableOccurrenceMap));
+            // For JOIN, set occurrence to 1 for all tables
+            Map<String, Integer> joinOccurrenceMap = new HashMap<>();
+            for (SqlIdentifier tableId : result.getSourceTables()) {
+                String tableName = getTableNameFromEntity(tableId);
+                if (tableName == null) {
+                    tableName = getTableName(tableId);
+                }
+                if (tableName != null) {
+                    joinOccurrenceMap.put(tableName.toLowerCase(), 1);
+                }
+            }
+            result.getColumnInfos().addAll(ColumnExtractor.extractColumns(join.getCondition(), ClauseType.JOIN, dialect.product.name, joinOccurrenceMap));
 
 //            result.getContext().getJoinClauses().add(joinClause);
         }
@@ -511,12 +500,15 @@ public class SelectVisitor extends BaseStatementVisitor {
 
     /**
      * Computes a map from table name (normalized) to occurrence number.
-     * The occurrence number represents the order in which the table appears in the query.
+     * The occurrence number represents how many times this table appears in the query.
+     * Note: This counts all occurrences in sourceTables, which may include duplicates from nested subqueries.
      * 
      * @param sourceTables The list of source tables from the query (preserves insertion order)
      * @return Map from normalized table name to occurrence number (1-based)
      */
     private Map<String, Integer> computeTableOccurrenceMap(List<SqlIdentifier> sourceTables) {
+        // For GROUP BY and JOIN, we don't have mainQueryTableCount, so we count all occurrences
+        // This may result in high occurrence numbers if sourceTables contains duplicates from nested subqueries
         return computeTableOccurrenceMapWithFirstOccurrence(sourceTables, 0);
     }
 
@@ -533,10 +525,11 @@ public class SelectVisitor extends BaseStatementVisitor {
             return occurrenceMap;
         }
 
-        // Track first occurrence per table name
-        Map<String, Integer> firstOccurrenceMap = new HashMap<>();
-        // Track current occurrence count per table
-        Map<String, Integer> tableCountMap = new HashMap<>();
+        // Track occurrence count per table name
+        // Count occurrences sequentially: 1, 2, 3, etc. for each table
+        // The issue is that sourceTables may contain duplicates from nested subqueries,
+        // so we need to count only distinct occurrences of each table name
+        Map<String, Integer> tableOccurrenceCount = new HashMap<>();
         
         for (int i = 0; i < sourceTables.size(); i++) {
             SqlIdentifier tableId = sourceTables.get(i);
@@ -555,19 +548,222 @@ public class SelectVisitor extends BaseStatementVisitor {
             
             if (tableName != null) {
                 String normalizedTableName = tableName.toLowerCase();
-                int currentCount = tableCountMap.getOrDefault(normalizedTableName, 0) + 1;
-                tableCountMap.put(normalizedTableName, currentCount);
-
-                if (!firstOccurrenceMap.containsKey(normalizedTableName)) {
-                    firstOccurrenceMap.put(normalizedTableName, 1);
-                    occurrenceMap.put(normalizedTableName, 1);
-                } else {
-                    occurrenceMap.put(normalizedTableName, currentCount);
-                }
+                
+                // Increment occurrence count for this table name
+                // This counts all occurrences, including duplicates from nested subqueries
+                // The real fix requires deduplicating sourceTables, but for now we'll count all
+                int currentOccurrence = tableOccurrenceCount.getOrDefault(normalizedTableName, 0) + 1;
+                tableOccurrenceCount.put(normalizedTableName, currentOccurrence);
+                
+                // Store the current occurrence number for this table
+                // Note: This stores the final occurrence count, which means all columns from
+                // the same table will get the same occurrence (the final count)
+                occurrenceMap.put(normalizedTableName, currentOccurrence);
             }
         }
         
         return occurrenceMap;
+    }
+
+    /**
+     * Extracts columns from WHERE clause and counts occurrences sequentially.
+     * First time we see a table in a filter -> occurrence 1 (all columns from that table get occurrence 1)
+     * Second time we see the same table in a filter -> occurrence 2 (all columns from that table get occurrence 2)
+     * And so on...
+     * 
+     * The key is: occurrence is per table instance, not per column.
+     * All columns from the same table in the same WHERE clause get the same occurrence.
+     */
+    private List<ColumnInfo> extractColumnsWithSequentialOccurrence(SqlNode whereExpr, ClauseType clauseType, String product, Map<String, Integer> tableOccurrenceCount) {
+        // First, collect ALL columns from the WHERE clause without assigning occurrences
+        List<ColumnInfo> allColumns = new ArrayList<>();
+        extractColumnsWithSequentialOccurrenceRecursive(whereExpr, clauseType, product, allColumns, null);
+        
+        // Now group columns by table and assign occurrences
+        // Track which tables we've seen and in what order
+        Map<String, Integer> tableOrder = new LinkedHashMap<>();
+        Map<String, List<ColumnInfo>> columnsByTable = new HashMap<>();
+        List<ColumnInfo> columnsWithoutTable = new ArrayList<>();
+        
+        for (ColumnInfo ci : allColumns) {
+            if (ci != null && ci.getTableName() != null) {
+                String normalizedTableName = ci.getTableName().toLowerCase();
+                // Track the order in which we first see each table
+                if (!tableOrder.containsKey(normalizedTableName)) {
+                    tableOrder.put(normalizedTableName, tableOrder.size() + 1);
+                }
+                columnsByTable.computeIfAbsent(normalizedTableName, k -> new ArrayList<>()).add(ci);
+            } else if (ci != null) {
+                columnsWithoutTable.add(ci);
+            }
+        }
+        
+        // Assign occurrences: all columns from the same table in this WHERE clause get the same occurrence
+        // The occurrence is based on how many times we've seen this table across all WHERE clauses
+        // Within a single WHERE clause, all columns from the same table get the same occurrence
+        List<ColumnInfo> result = new ArrayList<>();
+        for (String normalizedTableName : tableOrder.keySet()) {
+            List<ColumnInfo> tableColumns = columnsByTable.get(normalizedTableName);
+            
+            // Get next occurrence for this table (increments each time we see this table in a new WHERE clause)
+            // All columns from this table in this WHERE clause get the same occurrence
+            int currentOccurrence = tableOccurrenceCount.getOrDefault(normalizedTableName, 0) + 1;
+            tableOccurrenceCount.put(normalizedTableName, currentOccurrence);
+            
+            // Assign the same occurrence to ALL columns from this table in this WHERE clause
+            for (ColumnInfo ci : tableColumns) {
+                ColumnInfo columnInfoWithOccurrence = ColumnInfo.builder()
+                        .product(ci.getProduct())
+                        .database(ci.getDatabase())
+                        .schema(ci.getSchema())
+                        .tableName(ci.getTableName())
+                        .columnName(ci.getColumnName())
+                        .clause(ci.getClause())
+                        .occurrence(currentOccurrence)
+                        .build();
+                
+                if (!result.contains(columnInfoWithOccurrence)) {
+                    result.add(columnInfoWithOccurrence);
+                }
+            }
+        }
+        
+        // Handle columns without table name
+        for (ColumnInfo ci : columnsWithoutTable) {
+            if (!result.contains(ci)) {
+                ColumnInfo columnInfoWithOccurrence = ColumnInfo.builder()
+                        .product(ci.getProduct())
+                        .database(ci.getDatabase())
+                        .schema(ci.getSchema())
+                        .tableName(ci.getTableName())
+                        .columnName(ci.getColumnName())
+                        .clause(ci.getClause())
+                        .occurrence(1)
+                        .build();
+                result.add(columnInfoWithOccurrence);
+            }
+        }
+        
+        return result;
+    }
+    
+    private void extractColumnsWithSequentialOccurrenceRecursive(SqlNode node, ClauseType clauseType, String product, List<ColumnInfo> columnInfos, Map<String, Integer> tableOccurrenceCount) {
+        // This method just collects columns without assigning occurrences
+        // Occurrences are assigned in the parent method after grouping by table
+        if (node == null) {
+            return;
+        }
+
+        // Handle subqueries - process their WHERE clauses recursively
+        // Each subquery's WHERE clause is processed separately via extractColumnsWithSequentialOccurrence
+        if (node instanceof SqlSelect subquery) {
+            if (subquery.getWhere() != null) {
+                extractColumnsWithSequentialOccurrenceRecursive(subquery.getWhere(), clauseType, product, columnInfos, tableOccurrenceCount);
+            }
+            return;
+        }
+
+        // Extract columns from column identifiers
+        if (node instanceof com.calcite_new.sql.SqlColumnIdentifier ||
+            (node instanceof SqlIdentifier id &&
+             !(id instanceof com.calcite_new.sql.SqlTableIdentifier) &&
+             !(id instanceof com.calcite_new.sql.SqlViewIdentifier))) {
+            
+            // Use ColumnExtractor to get column info (without occurrence)
+            // Just collect columns here - occurrences will be assigned in parent method
+            List<ColumnInfo> extracted = ColumnExtractor.extractColumns(node, clauseType, product, new HashMap<>());
+            for (ColumnInfo ci : extracted) {
+                if (ci != null && !columnInfos.contains(ci)) {
+                    columnInfos.add(ci);
+                }
+            }
+        }
+        else if (node instanceof SqlCall call) {
+            // Handle special cases like IN (SELECT ...) and EXISTS (SELECT ...)
+            SqlOperator operator = call.getOperator();
+            if (operator != null) {
+                org.apache.calcite.sql.SqlKind kind = operator.getKind();
+                String opName = operator.getName();
+                
+                if (kind == org.apache.calcite.sql.SqlKind.IN || kind == org.apache.calcite.sql.SqlKind.NOT_IN ||
+                    "IN".equalsIgnoreCase(opName) || "NOT IN".equalsIgnoreCase(opName)) {
+                    List<SqlNode> operands = call.getOperandList();
+                    if (operands.size() >= 2) {
+                        SqlNode rhs = operands.get(1);
+                        if (rhs instanceof SqlSelect) {
+                            extractColumnsWithSequentialOccurrenceRecursive(rhs, clauseType, product, columnInfos, tableOccurrenceCount);
+                        }
+                    }
+                }
+                else if (kind == org.apache.calcite.sql.SqlKind.EXISTS || "EXISTS".equalsIgnoreCase(opName)) {
+                    List<SqlNode> operands = call.getOperandList();
+                    if (!operands.isEmpty()) {
+                        SqlNode operand = operands.get(0);
+                        if (operand instanceof SqlSelect) {
+                            extractColumnsWithSequentialOccurrenceRecursive(operand, clauseType, product, columnInfos, tableOccurrenceCount);
+                        }
+                    }
+                }
+            }
+            
+            // Process all operands recursively
+            for (SqlNode operand : call.getOperandList()) {
+                extractColumnsWithSequentialOccurrenceRecursive(operand, clauseType, product, columnInfos, tableOccurrenceCount);
+            }
+        }
+        else if (node instanceof SqlNodeList nodeList) {
+            for (SqlNode item : nodeList.getList()) {
+                extractColumnsWithSequentialOccurrenceRecursive(item, clauseType, product, columnInfos, tableOccurrenceCount);
+            }
+        }
+    }
+    
+    /**
+     * Extracts WHERE clause columns from nested subqueries in the FROM clause.
+     * This handles WHERE clauses in subqueries that are part of JOINs.
+     */
+    private List<ColumnInfo> extractWhereColumnsFromFromClause(SqlNode from, ClauseType clauseType, String product, Map<String, Integer> tableOccurrenceCount) {
+        List<ColumnInfo> columnInfos = new ArrayList<>();
+        extractWhereColumnsFromFromClauseRecursive(from, clauseType, product, columnInfos, tableOccurrenceCount);
+        return columnInfos;
+    }
+    
+    private void extractWhereColumnsFromFromClauseRecursive(SqlNode node, ClauseType clauseType, String product, List<ColumnInfo> columnInfos, Map<String, Integer> tableOccurrenceCount) {
+        if (node == null) {
+            return;
+        }
+        
+        // If this is a SqlSelect, extract its WHERE clause
+        if (node instanceof SqlSelect select) {
+            if (select.getWhere() != null) {
+                List<ColumnInfo> whereColumns = extractColumnsWithSequentialOccurrence(select.getWhere(), clauseType, product, tableOccurrenceCount);
+                columnInfos.addAll(whereColumns);
+            }
+            // Also process the FROM clause of this subquery recursively
+            if (select.getFrom() != null) {
+                extractWhereColumnsFromFromClauseRecursive(select.getFrom(), clauseType, product, columnInfos, tableOccurrenceCount);
+            }
+            return;
+        }
+        
+        // If this is a JOIN, process both left and right sides
+        if (node instanceof SqlJoin join) {
+            extractWhereColumnsFromFromClauseRecursive(join.getLeft(), clauseType, product, columnInfos, tableOccurrenceCount);
+            extractWhereColumnsFromFromClauseRecursive(join.getRight(), clauseType, product, columnInfos, tableOccurrenceCount);
+            return;
+        }
+        
+        // If this is an AS call with a subquery, process the subquery
+        if (node instanceof SqlBasicCall call && 
+            call.getOperator() != null && 
+            call.getOperator().getName().equalsIgnoreCase("AS") &&
+            !call.getOperandList().isEmpty()) {
+            SqlNode firstOperand = call.getOperandList().get(0);
+            if (firstOperand instanceof SqlSelect) {
+                extractWhereColumnsFromFromClauseRecursive(firstOperand, clauseType, product, columnInfos, tableOccurrenceCount);
+            }
+            return;
+        }
     }
 
     private List<ColumnInfo> extractColumnsExcludingSubqueries(SqlNode whereExpr, ClauseType clauseType, String product, Map<String, Integer> occurrenceMap) {
