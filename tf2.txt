@@ -1,381 +1,90 @@
-terraform {
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = ">= 4.0"
-    }
-  }
-}
+WITH partitioned_tables AS (
+    SELECT DISTINCT
+        database,
+        schema,
+        table_name,
+        partition_columns  -- Using only partition_columns, NOT partition_text
+    FROM partition_metadata
+    WHERE partition_columns IS NOT NULL
+      AND partition_columns::text != '[]'
+      AND partition_columns::text != ''
+),
 
-# ------------------------------------------------------------------------------
-# Locals
-# All static and dynamic values are defined here, replacing the need for
-# variables.tf and terraform.tfvars files.
-# ------------------------------------------------------------------------------
-locals {
-  # ----------------------------------------------------------------------------
-  # Static Configuration (Values from params.sh)
-  # ----------------------------------------------------------------------------
-  my_project                 = "hsbc-12010598-fdrasp-dev"
-  region                     = "asia-east2"
-  zone_postfix               = "a"
-  inst_postfix               = "dev-9999"
-  host_project               = "hsbc-6320774-vpchost-asia"
-  host_subnet                = "${local.host_project}-internal-vpc1"
-  project_vpc_subnet         = "net1"
-  default_network            = "hsbc-default-network"
-  kms_project                = "hsbc-6320774-kms"
-  image_project              = "hsbc-6320774-distcompute-prod"
-  image_family_stage2        = "gce-rhel8-ver2-stage2"
-  image_family_stage3        = "query-genie-reco-stage3"
-  ip_static_name             = "query-genie-test"
-  policy_name                = "office-hours"
-  vm_stop_schedule           = "0 19 * * *"
-  cloudsql_instance_name     = "qg-reco-engine"
-  postgres_password          = "Temp@1234"
-  db_name                    = "recommendations"
-  vm_name                    = "query-genie-reco"
-  machine_type               = "n2-standard-8"
-  disk_type                  = "pd-standard"
-  disk_size_gb               = 300
-  yum_packages               = "python312:python3-pip:java-17-openjdk:git"
-  startup_script_bucket      = "${local.my_project}-query-genie-reco"
-  startup_script_path        = "query-genie-reco/extraction_startup.sh"
-  startup_script_local_path  = "extraction_startup.sh"
-  iam_user_emails            = []
-  iam_service_account_names  = ["terraform-jenkins-usr", "query-genie"]
-  build_account_name         = "terraform-jenkins-usr"
-
-  # --- Feature Flags ---
-  build_sql = true
-  build_vm  = true
-
-  # --- KMS Flags ---
-  use_hsm_key_for_gcs = false
-  use_hsm_key_for_gce = false
-  use_hsm_key_for_sql = false
-
-  # --- VM Scopes ---
-  vm_scopes = [
-    "https://www.googleapis.com/auth/compute",
-    "https://www.googleapis.com/auth/logging.write",
-    "https://www.googleapis.com/auth/monitoring.write",
-    "https://www.googleapis.com/auth/bigquery",
-    "https://www.googleapis.com/auth/sqlservice.admin",
-    "https://www.googleapis.com/auth/devstorage.full_control",
-    "https://www.googleapis.com/auth/cloud-platform",
-  ]
-
-  # --- Network Tags ---
-  network_tags = [
-    "fwtag-all-dev-inout-ccs-collectors-production",
-    "fwtag-all-dev-out-alm-github",
-    "fwtag-all-dev-out-alm-nexus-3-production",
-    "fwtag-all-dev-out-efx-nexus-3-production",
-    "fwtag-all-dev-out-gl-repo",
-    "tt-6320774-vpchost-eu-cinternal-drn-a-i-ssh",
-    "tt-6320774-vpchost-asia-cinternal-drn-a-i-ssh",
-    "fwtag-cloudsql-access",
-    "fwtag-all-dev-out-efx-nexus-2-production",
-    "fwtag-all-dev-out-gbm-nexus-production"
-  ]
-
-  # ----------------------------------------------------------------------------
-  # Derived & Dynamic Values (Logic from scripts)
-  # ----------------------------------------------------------------------------
-  env                        = regex(".*-([^-]+)$", local.my_project)[0]
-  iam_service_account_emails = [for sa in local.iam_service_account_names : "${sa}@${local.my_project}.iam.gserviceaccount.com"]
-  build_account_email        = "${local.build_account_name}@${local.my_project}.iam.gserviceaccount.com"
-  vm_sa_email                = "query-genie@${local.my_project}.iam.gserviceaccount.com"
-  host_subnet_uri            = "projects/${local.host_project}/regions/${local.region}/subnetworks/${local.host_subnet}"
-  project_subnet_uri         = "projects/${local.my_project}/regions/${local.region}/subnetworks/${local.project_vpc_subnet}"
-  def_subnet_uri             = "projects/${local.my_project}/regions/${local.region}/subnetworks/${local.default_network}"
-  vm_instance_name           = "${local.vm_name}-${local.inst_postfix}-extraction-test"
-  policy_instance_name       = "${local.policy_name}-${local.inst_postfix}"
-  sql_instance_name          = "${local.cloudsql_instance_name}-${local.env}"
-  zone                       = "${local.region}-${local.zone_postfix}"
-  region_to_timezone = {
-    "asia-south1"  = "Asia/Kolkata"
-    "asia-east2"   = "Asia/Hong_Kong"
-    "europe-west2" = "Europe/London"
-  }
-  timezone                   = lookup(local.region_to_timezone, local.region, "Asia/Hong_Kong")
-  startup_script_url         = "gs://${local.startup_script_bucket}/${local.startup_script_path}"
-  kms_bucket_key             = local.use_hsm_key_for_gcs ? "projects/${local.kms_project}/locations/${local.region}/keyRings/cloudStorage/cryptoKeys/HSMCloudStorage" : "projects/${local.kms_project}/locations/${local.region}/keyRings/cloudStorage/cryptoKeys/cloudStorage"
-  kms_compute_key            = local.use_hsm_key_for_gce ? "projects/${local.kms_project}/locations/${local.region}/keyRings/computeEngine/cryptoKeys/HSMComputeEngine" : "projects/${local.kms_project}/locations/${local.region}/keyRings/computeEngine/cryptoKeys/computeEngine"
-  kms_sql_key                = local.use_hsm_key_for_sql ? "projects/${local.kms_project}/locations/${local.region}/keyRings/sql/cryptoKeys/HSMSqlSharedKey" : "projects/${local.kms_project}/locations/${local.region}/keyRings/sql/cryptoKeys/sqlSharedKey"
-  ar_kms_key                 = "projects/${local.kms_project}/locations/${local.region}/keyRings/ar/cryptoKeys/arSharedKey"
-}
-
-provider "google" {
-  project = local.my_project
-  region  = local.region
-
-  impersonate_service_account = local.build_account_email
-}
-
-# ------------------------------------------------------------------------------
-# Data Sources
-# ------------------------------------------------------------------------------
-data "google_project" "project" {
-  project_id = local.my_project
-}
-
-data "google_compute_address" "static_ip" {
-  name = local.ip_static_name
-}
-
-# ------------------------------------------------------------------------------
-# GCS Resources
-# ------------------------------------------------------------------------------
-resource "google_storage_bucket_object" "startup_script" {
-  count  = local.build_vm ? 1 : 0
-  name   = local.startup_script_path
-  bucket = local.startup_script_bucket
-  source = local.startup_script_local_path
-
-  detect_md5hash = "different"
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-# ------------------------------------------------------------------------------
-# VM Pre-Creation Deletion
-# This ensures the VM is always deleted before creation (shell script behavior)
-# ------------------------------------------------------------------------------
-resource "null_resource" "delete_instance_before_create" {
-  count = local.build_vm ? 1 : 0
-
-  triggers = {
-    # This ensures the VM is recreated every time
-    always_run = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command = "gcloud compute instances delete ${local.vm_instance_name} --project=${local.my_project} --zone=${local.zone} --quiet --impersonate-service-account=${local.build_account_email} || true"
-  }
-}
-
-# ------------------------------------------------------------------------------
-# Resource Definitions
-# ------------------------------------------------------------------------------
-
-# --- Check if Resource Policy already exists ---
-resource "null_resource" "check_policy_exists" {
-  count = local.build_vm ? 1 : 0
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      if gcloud compute resource-policies describe ${local.policy_instance_name} --region=${local.region} --project=${local.my_project} --impersonate-service-account=${local.build_account_email} > /dev/null 2>&1; then
-        echo "Resource policy ${local.policy_instance_name} already exists"
-      else
-        echo "Creating resource policy ${local.policy_instance_name}"
-        gcloud compute resource-policies create instance-schedule ${local.policy_instance_name} \
-          --region=${local.region} \
-          --vm-stop-schedule="${local.vm_stop_schedule}" \
-          --timezone=${local.timezone} \
-          --description="Office Hours for ${local.inst_postfix}" \
-          --project=${local.my_project} \
-          --impersonate-service-account=${local.build_account_email}
-      fi
-    EOT
-  }
-}
-
-# --- GCE Proxy VM Instance (ALWAYS recreated) ---
-resource "google_compute_instance" "proxy_vm" {
-  count = local.build_vm ? 1 : 0
-
-  depends_on = [null_resource.delete_instance_before_create]
-
-  project      = local.my_project
-  zone         = local.zone
-  name         = local.vm_instance_name
-  machine_type = local.machine_type
-  tags         = local.network_tags
-
-  boot_disk {
-    initialize_params {
-      image = "projects/${local.image_project}/global/images/family/${local.image_family_stage2}"
-      size  = local.disk_size_gb
-      type  = local.disk_type
-    }
-    device_name      = local.vm_instance_name
-    kms_key_self_link = local.kms_compute_key
-  }
-
-  network_interface {
-    subnetwork = local.host_subnet_uri
-    network_ip = data.google_compute_address.static_ip.address
-  }
-
-  network_interface {
-    subnetwork = local.def_subnet_uri
-  }
-
-  service_account {
-    email  = local.vm_sa_email
-    scopes = local.vm_scopes
-  }
-
-  metadata = {
-    startup-script-url     = "gs://${local.startup_script_bucket}/${google_storage_bucket_object.startup_script[0].name}"
-    region                 = local.region
-    zonePostfix            = local.zone_postfix
-    project                = local.my_project
-    yumpackages            = local.yum_packages
-    env                    = local.env
-    nexus3                 = "nexus3"
-    gbmtNexus              = "gbmt-nexus"
-    nexus302               = "nexus302"
-    bucketUriStartup       = "gs://${local.startup_script_bucket}"
-    cloudsql_instance_name = local.sql_instance_name
-    cloudsql_private_ip    = local.build_sql ? data.google_sql_database_instance.main_db[0].private_ip_address : ""
-    isGmiTest              = "true"
-  }
-
-  allow_stopping_for_update = true
-
-  lifecycle {
-    ignore_changes = [scheduling]
-  }
-}
-
-# --- IAM Binding for the Proxy VM ---
-resource "google_compute_instance_iam_member" "vm_stopper" {
-  count         = local.build_vm ? 1 : 0
-  project       = local.my_project
-  zone          = local.zone
-  instance_name = google_compute_instance.proxy_vm[0].name
-  role          = "organizations/103829057055/roles/cr.instancestopStart"
-  member        = "serviceAccount:service-${data.google_project.project.number}@compute-system.iam.gserviceaccount.com"
-}
-
-# --- Attach the Resource Policy using local-exec ---
-resource "null_resource" "add_vm_schedule" {
-  count = local.build_vm ? 1 : 0
-  depends_on = [
-    google_compute_instance.proxy_vm,
-    google_compute_instance_iam_member.vm_stopper,
-    null_resource.check_policy_exists
-  ]
-  
-  provisioner "local-exec" {
-    command = "gcloud compute instances add-resource-policies ${google_compute_instance.proxy_vm[0].name} --resource-policies=${local.policy_instance_name} --zone=${local.zone} --project=${local.my_project} --impersonate-service-account=${local.build_account_email} || true"
-  }
-}
-
-# --- Check if Cloud SQL instance already exists, create if not ---
-resource "null_resource" "check_sql_exists" {
-  count = local.build_sql ? 1 : 0
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      if gcloud sql instances describe ${local.sql_instance_name} --project=${local.my_project} --impersonate-service-account=${local.build_account_email} > /dev/null 2>&1; then
-        echo "SQL instance ${local.sql_instance_name} already exists"
-      else
-        echo "Creating SQL instance ${local.sql_instance_name}"
-        gcloud sql instances create ${local.sql_instance_name} \
-          --database-version=POSTGRES_13 \
-          --tier=db-custom-2-8192 \
-          --region=${local.region} \
-          --network=projects/${data.google_project.project.name}/global/networks/${local.default_network} \
-          --no-assign-ip \
-          --disk-type=PD_SSD \
-          --disk-size=10 \
-          --enable-bin-log \
-          --backup \
-          --availability-type=REGIONAL \
-          --maintenance-window-day=SUN \
-          --maintenance-window-hour=4 \
-          --database-flags=cloudsql.iam_authentication=on \
-          --disk-encryption-key=${local.kms_sql_key} \
-          --project=${local.my_project} \
-          --impersonate-service-account=${local.build_account_email}
-      fi
-    EOT
-  }
-}
-
-# --- Data source to get the existing SQL instance info ---
-data "google_sql_database_instance" "main_db" {
-  count      = local.build_sql ? 1 : 0
-  name       = local.sql_instance_name
-  project    = local.my_project
-  
-  depends_on = [null_resource.check_sql_exists]
-}
-
-# --- Google Cloud SQL Database ---
-resource "google_sql_database" "database" {
-  count    = local.build_sql ? 1 : 0
-  instance = data.google_sql_database_instance.main_db[0].name
-  name     = local.db_name
-
-  lifecycle {
-    ignore_changes = [instance]
-  }
-}
-
-# --- Google Cloud SQL User ---
-resource "google_sql_user" "postgres_admin" {
-  count    = local.build_sql ? 1 : 0
-  instance = data.google_sql_database_instance.main_db[0].name
-  name     = "postgres"
-  password = local.postgres_password
-
-  lifecycle {
-    ignore_changes = [password, instance]
-  }
-}
-
-# --- IAM Users for Cloud SQL ---
-resource "google_sql_user" "iam_users" {
-  for_each = local.build_sql ? toset(local.iam_user_emails) : []
-  project  = local.my_project
-  instance = data.google_sql_database_instance.main_db[0].name
-  name     = each.key
-  type     = "CLOUD_IAM_USER"
-
-  lifecycle {
-    ignore_changes = [instance]
-  }
-}
-
-# --- IAM Service Accounts for Cloud SQL ---
-resource "google_sql_user" "iam_service_accounts" {
-  for_each = local.build_sql ? toset(local.iam_service_account_emails) : []
-  project  = local.my_project
-  instance = data.google_sql_database_instance.main_db[0].name
-  name     = each.key
-  type     = "CLOUD_IAM_SERVICE_ACCOUNT"
-
-  lifecycle {
-    ignore_changes = [instance]
-  }
-}
-
-# ------------------------------------------------------------------------------
-# Outputs
-# ------------------------------------------------------------------------------
-output "proxy_vm_primary_ip" {
-  description = "The primary internal IP address of the proxy VM."
-  value       = local.build_vm ? google_compute_instance.proxy_vm[0].network_interface[0].network_ip : "VM not built."
-}
-
-output "proxy_vm_secondary_ip" {
-  description = "The secondary internal IP address of the proxy VM."
-  value       = local.build_vm ? google_compute_instance.proxy_vm[0].network_interface[1].network_ip : "VM not built."
-}
-
-output "cloudsql_instance_connection_name" {
-  description = "The connection name for the Cloud SQL instance."
-  value       = local.build_sql ? data.google_sql_database_instance.main_db[0].connection_name : "SQL not built."
-}
-
-output "cloudsql_private_ip" {
-  description = "The private IP of the Cloud SQL instance."
-  value       = local.build_sql ? data.google_sql_database_instance.main_db[0].private_ip_address : "SQL not built."
-}
+partition_columns_expanded AS (
+    SELECT 
+        pt.database,
+        pt.schema,
+        pt.table_name,
+        LOWER(TRIM(unnested_col::text)) AS partition_column
+    FROM partitioned_tables pt
+    CROSS JOIN LATERAL (
+        SELECT unnest(string_to_array(pt.partition_columns::text, ',')) AS unnested_col
+    ) AS unnested
+    WHERE TRIM(unnested_col::text) != ''
+),
+-- Get all table occurrences from column_info
+table_occurrences AS (
+    SELECT DISTINCT
+        database,
+        schema,
+        table_name,
+        occurrence
+    FROM column_info
+    WHERE table_name IS NOT NULL
+),
+-- Get WHERE clause columns for each table occurrence
+where_clause_columns AS (
+    SELECT DISTINCT
+        ci.database,
+        ci.schema,
+        ci.table_name,
+        ci.occurrence,
+        LOWER(TRIM(ci.column_name)) AS column_name
+    FROM column_info ci
+    WHERE ci.clause = 'WHERE'
+      AND ci.table_name IS NOT NULL
+      AND ci.column_name IS NOT NULL
+),
+-- Check which table occurrences have partition column filters
+occurrences_with_partition_filter AS (
+    SELECT DISTINCT
+        wcc.database,
+        wcc.schema,
+        wcc.table_name,
+        wcc.occurrence
+    FROM where_clause_columns wcc
+    INNER JOIN partition_columns_expanded pce
+        ON LOWER(TRIM(wcc.table_name)) = LOWER(TRIM(pce.table_name))
+        AND wcc.column_name = pce.partition_column
+        AND COALESCE(wcc.database, '') = COALESCE(pce.database, '')
+        AND COALESCE(wcc.schema, '') = COALESCE(pce.schema, '')
+),
+-- Find table occurrences that DON'T have partition column filters
+occurrences_without_partition_filter AS (
+    SELECT 
+        to_occ.database,
+        to_occ.schema,
+        to_occ.table_name,
+        to_occ.occurrence
+    FROM table_occurrences to_occ
+    INNER JOIN partitioned_tables pt
+        ON LOWER(TRIM(to_occ.table_name)) = LOWER(TRIM(pt.table_name))
+        AND COALESCE(to_occ.database, '') = COALESCE(pt.database, '')
+        AND COALESCE(to_occ.schema, '') = COALESCE(pt.schema, '')
+    LEFT JOIN occurrences_with_partition_filter owpf
+        ON COALESCE(to_occ.database, '') = COALESCE(owpf.database, '')
+        AND COALESCE(to_occ.schema, '') = COALESCE(owpf.schema, '')
+        AND to_occ.table_name = owpf.table_name
+        AND to_occ.occurrence = owpf.occurrence
+    WHERE owpf.occurrence IS NULL
+)
+-- Final result: Tables that have at least one occurrence without partition column filter
+SELECT DISTINCT
+    database,
+    schema,
+    table_name,
+    COUNT(DISTINCT occurrence) AS occurrences_without_partition_filter,
+    STRING_AGG(DISTINCT occurrence::TEXT, ', ' ORDER BY occurrence::TEXT) AS missing_filter_occurrences
+FROM occurrences_without_partition_filter
+GROUP BY database, schema, table_name
+ORDER BY database, schema, table_name;
