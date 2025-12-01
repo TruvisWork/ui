@@ -73,11 +73,17 @@ public class SelectVisitor extends BaseStatementVisitor {
                     orderByClause.setIsOderByInsideSubQuery(true);
                     result.getContext().setOrderByClause(orderByClause);
                 } else if (basicCall.getOperator().getName().equalsIgnoreCase("AS") &&
-                        basicCall.getOperandList().get(0) instanceof SqlIdentifier tableId) {
-                    // Skip CTEs from being added as source tables
-                    String tableName = getTableName(tableId);
-                    if (tableName == null || !result.getContext().getCteAliases().contains(tableName)) {
-                        result.getSourceTables().add(tableId);
+                        !basicCall.getOperandList().isEmpty()) {
+                    SqlNode firstOperand = basicCall.getOperandList().get(0);
+                    if (firstOperand instanceof SqlIdentifier tableId) {
+                        // Skip CTEs from being added as source tables
+                        String tableName = getTableName(tableId);
+                        if (tableName == null || !result.getContext().getCteAliases().contains(tableName)) {
+                            result.getSourceTables().add(tableId);
+                        }
+                    } else if (firstOperand instanceof SqlSelect) {
+                        // Handle subquery with alias: (SELECT ...) AS alias
+                        // Tables from the subquery will be extracted via recursive visitor call below
                     }
                 }
             } else if (from instanceof SqlIdentifier id) {
@@ -88,9 +94,12 @@ public class SelectVisitor extends BaseStatementVisitor {
                 }
             } else if (from instanceof SqlJoin join) {
                 processJoin(join, result);
+            } else if (from instanceof SqlSelect) {
+                // Handle subquery directly in FROM clause (without alias)
+                // Tables from the subquery will be extracted via recursive visitor call below
             }
 
-            // Process other from clause aspects
+            // Process other from clause aspects - this recursively processes subqueries and extracts their tables
             SqlNodeVisitor visitor = new SqlNodeVisitor(userName, defaultDatabase, defaultSchema, relationshipExtractor, entityCatalog);
             SqlNodeVisitor.Result fromResult = from.accept(visitor);
             SqlNodeVisitor.mergeResults(result, fromResult);
@@ -218,6 +227,17 @@ public class SelectVisitor extends BaseStatementVisitor {
         }
         registerJoinTables(join.getRight());
 
+        // Recursively process join operands to extract tables from subqueries
+        SqlNodeVisitor visitor = new SqlNodeVisitor(userName, defaultDatabase, defaultSchema, relationshipExtractor, entityCatalog);
+        SqlNodeVisitor.Result leftResult = join.getLeft().accept(visitor);
+        if (leftResult != null) {
+            SqlNodeVisitor.mergeResults(result, leftResult);
+        }
+        SqlNodeVisitor.Result rightResult = join.getRight().accept(visitor);
+        if (rightResult != null) {
+            SqlNodeVisitor.mergeResults(result, rightResult);
+        }
+
         SqlIdentifier leftIdentifier = getJoinTableIdentifier(leftTable);
         SqlIdentifier rightIdentifier = getJoinTableIdentifier(join.getRight());
         if (leftIdentifier != null && rightIdentifier != null) {
@@ -316,15 +336,32 @@ public class SelectVisitor extends BaseStatementVisitor {
             }
         } else if (node instanceof SqlBasicCall call &&
                 call.getOperator().getName().equalsIgnoreCase("AS") &&
-                call.getOperandList().get(0) instanceof SqlIdentifier tableId) {
-            // Skip CTEs from being added as source tables
-            String tableName = getTableName(tableId);
-            if (tableName == null || !result.getContext().getCteAliases().contains(tableName)) {
-                result.getSourceTables().add(tableId);
+                !call.getOperandList().isEmpty()) {
+            SqlNode firstOperand = call.getOperandList().get(0);
+            if (firstOperand instanceof SqlIdentifier tableId) {
+                // Skip CTEs from being added as source tables
+                String tableName = getTableName(tableId);
+                if (tableName == null || !result.getContext().getCteAliases().contains(tableName)) {
+                    result.getSourceTables().add(tableId);
+                }
+            } else if (firstOperand instanceof SqlSelect) {
+                // Handle subquery with alias: recursively extract tables from the subquery
+                SqlNodeVisitor visitor = new SqlNodeVisitor(userName, defaultDatabase, defaultSchema, relationshipExtractor, entityCatalog);
+                SqlNodeVisitor.Result subqueryResult = firstOperand.accept(visitor);
+                if (subqueryResult != null) {
+                    SqlNodeVisitor.mergeResults(result, subqueryResult);
+                }
             }
         } else if (node instanceof SqlJoin joinNode) {
             addSourceTable(joinNode.getLeft(), result);
             addSourceTable(joinNode.getRight(), result);
+        } else if (node instanceof SqlSelect subquery) {
+            // Handle subquery directly: recursively extract tables from the subquery
+            SqlNodeVisitor visitor = new SqlNodeVisitor(userName, defaultDatabase, defaultSchema, relationshipExtractor, entityCatalog);
+            SqlNodeVisitor.Result subqueryResult = subquery.accept(visitor);
+            if (subqueryResult != null) {
+                SqlNodeVisitor.mergeResults(result, subqueryResult);
+            }
         }
     }
 
