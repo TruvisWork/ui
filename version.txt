@@ -1,392 +1,383 @@
-import os
-import argparse
-from datetime import datetime, timedelta
-from google.cloud.sql.connector import Connector
-import pg8000
-from .db_config import get_db_url_and_schema, get_instance_id
-import logging
-import json
+package com.calcite_new.sql.core.processor.visitor;
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+import com.calcite_new.core.dialect.Product;
+import com.calcite_new.core.dialect.sql.BigQuerySqlDialect;
+import com.calcite_new.core.dialect.sql.SqlDialect;
+import com.calcite_new.core.model.EntityCatalog;
+import com.calcite_new.core.model.Identifier;
+import com.calcite_new.core.model.entity.Column;
+import com.calcite_new.core.model.entity.DataType;
+import org.apache.calcite.sql.type.SqlTypeName;
+import com.calcite_new.core.model.entity.Table;
+import com.calcite_new.core.model.entity.View;
 
-class VersionMaster:
-    """
-    Enhanced Version Master class to track pipeline execution status and stages
-    """
+import java.util.ArrayList;
+import java.util.List;
 
-    def __init__(self):
-        self.version_id = None
-        self.project_ids = []
-        self.extraction_date = None
-        self.start_time = None
-        self.conn = None
-        self.connector = None
-        self.days = None
+/**
+ * Builds an EntityCatalog with all tables referenced in proc.sql queries.
+ */
+public class ProcQueriesTestCatalogBuilder {
+    private EntityCatalog catalog = new EntityCatalog();
+    private final SqlDialect sqlDialect = new BigQuerySqlDialect();
+    private final Identifier dialect = Identifier.of(Product.BIG_QUERY.name, sqlDialect);
+    private Identifier projectName = Identifier.of("test", sqlDialect);
 
-    def get_db_connection(self):
-        """Establish a connection to Cloud SQL PostgreSQL using IAM authentication"""
-        try:
-            instance_connection_name, database, iam_user, schema, input_dir, ip_type, days = get_db_url_and_schema()
-            self.connector = Connector()
-            self.conn = self.connector.connect(
-                instance_connection_name,
-                "pg8000",
-                user=iam_user,
-                db=database,
-                enable_iam_auth=True,
-                ip_type=ip_type,
-            )
-            self.days = days
-            return True
-        except Exception as e:
-            logger.error(f"Error: Unable to connect to the database. {e}")
-            return False
+    /**
+     * Creates an EntityCatalog with all required tables
+     */
+    public EntityCatalog build() {
+        catalog = new EntityCatalog();
 
-    def close_connection(self):
-        """Close database connection"""
-        try:
-            if self.conn:
-                self.conn.close()
-            if self.connector:
-                self.connector.close()
-        except Exception as e:
-            logger.error(f"Error closing connection: {e}")
+        addAmhFzFdrDevSitTables();
+        addAmhFzFdrProdTables();
+        addAmhFzReportsPartsTablesDevTables();
+        addAmhFzReportMartsTablesDevTables();
 
-    def create_version_master_table(self):
-        """Create version_master table if it doesn't exist"""
-        try:
-            if not self.conn and not self.get_db_connection():
-                return False
+        return catalog;
+    }
 
-            cursor = self.conn.cursor()
-            _, _, _, schema, _, _, _ = get_db_url_and_schema()
+    /**
+     * Sets the project name for the catalog
+     */
+    public ProcQueriesTestCatalogBuilder withProjectName(String projectName) {
+        this.projectName = Identifier.of(projectName, sqlDialect);
+        return this;
+    }
 
-            create_table_query = f"""
-            CREATE TABLE IF NOT EXISTS {schema}.version_master (
-                version_id BIGINT PRIMARY KEY,
-                project_ids TEXT NOT NULL,
-                extraction_date TIMESTAMP NOT NULL,
-                status VARCHAR(20) NOT NULL CHECK (status IN ('RUNNING', 'IN_PROGRESS', 'COMPLETED', 'FAILED')),
-                stage_name VARCHAR(100) NOT NULL,
-                start_time TIMESTAMP NOT NULL,
-                end_time TIMESTAMP
-            );
+    /**
+     * Sets the catalog to use (allows building on an existing catalog)
+     */
+    public ProcQueriesTestCatalogBuilder withCatalog(EntityCatalog catalog) {
+        this.catalog = catalog;
+        return this;
+    }
 
-            CREATE INDEX IF NOT EXISTS idx_version_master_extraction_date ON {schema}.version_master(extraction_date DESC);
-            CREATE INDEX IF NOT EXISTS idx_version_master_status ON {schema}.version_master(status);
-            CREATE INDEX IF NOT EXISTS idx_version_master_project_ids ON {schema}.version_master(project_ids);
-            CREATE INDEX IF NOT EXISTS idx_version_master_version_id ON {schema}.version_master(version_id DESC);
-            """
+    /**
+     * Creates a table with the given name and columns in the specified dataset
+     */
+    public ProcQueriesTestCatalogBuilder withTable(String datasetName, String tableName, List<Column> columns) {
+        Identifier datasetId = Identifier.of(datasetName, sqlDialect);
+        Identifier tableId = Identifier.of(tableName, sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
 
-            cursor.execute(create_table_query)
-            self.conn.commit()
-            cursor.close()
-            logger.info("Version master table created/verified successfully")
-            return True
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+        return this;
+    }
 
-        except Exception as e:
-            logger.error(f"Error creating version master table: {e}")
-            if self.conn: 
-                self.conn.rollback()
-            return False
+    /**
+     * Creates a view with the given name, columns, and SQL definition in the specified dataset
+     */
+    public ProcQueriesTestCatalogBuilder withView(String datasetName, String viewName, List<Column> columns, String viewSql) {
+        Identifier datasetId = Identifier.of(datasetName, sqlDialect);
+        Identifier viewId = Identifier.of(viewName, sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
 
-    def get_next_version_id(self):
-        """Get the next version ID across all projects"""
-        try:
-            if not self.conn and not self.get_db_connection():
-                return None
+        catalog.addEntity(new View(namespace, viewId, columns, viewSql, System.currentTimeMillis()));
+        return this;
+    }
 
-            cursor = self.conn.cursor()
-            _, _, _, schema, _, _, _ = get_db_url_and_schema()
+    /**
+     * Helper method to create a column with the given name, position, and data type
+     */
+    public static Column createColumn(String datasetName, String tableName, String columnName, int position, DataType dataType) {
+        SqlDialect sqlDialect = new BigQuerySqlDialect();
+        Identifier dialect = Identifier.of(Product.BIG_QUERY.name, sqlDialect);
+        Identifier projectName = Identifier.of("test", sqlDialect);
+        Identifier datasetId = Identifier.of(datasetName, sqlDialect);
+        Identifier tableId = Identifier.of(tableName, sqlDialect);
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
 
-            query = f"SELECT version_id FROM {schema}.version_master ORDER BY version_id DESC LIMIT 1"
-            cursor.execute(query)
-            result = cursor.fetchone()
-            cursor.close()
+        return Column.builder()
+                .namespace(columnNamespace)
+                .name(Identifier.of(columnName, sqlDialect))
+                .dialect(sqlDialect)
+                .ordinalPosition(position)
+                .type(dataType)
+                .build();
+    }
 
-            if result and result[0] is not None:
-                next_version_id = int(result[0]) + 1
-            else:
-                next_version_id = 1
+    /**
+     * Add tables from AMH_FZ_FDR_DEV_SIT dataset
+     */
+    private void addAmhFzFdrDevSitTables() {
+        Identifier datasetId = Identifier.of("amh_fz_fdr_dev_sit", sqlDialect);
+        addCmEventArrivalTable(datasetId);
+        addEventStoreTable(datasetId);
+        addCmEventStateUpdatesTable(datasetId);
+        addCmEventAssigneeUpdateTable(datasetId);
+        addCmEventQueueChangedTable(datasetId);
+        addWorkflowRulesView(datasetId);
+        addAmhReportMartControlTable(datasetId);
+        addRulesAuditTable(datasetId);
+    }
 
-            logger.info(f"Next global version ID: {next_version_id}")
-            return next_version_id
+    private void addAmhFzFdrProdTables() {
+        Identifier datasetId = Identifier.of("amh_fz_fdr_prod", sqlDialect);
+        addRulesAuditTable(datasetId);
+    }
 
-        except Exception as e:
-            logger.error(f"Error getting next version ID: {e}")
-            raise
+    /**
+     * Add tables from AMH_FZ_REPORTS_PARTS_TABLES_DEV dataset
+     */
+    private void addAmhFzReportsPartsTablesDevTables() {
+        Identifier datasetId = Identifier.of("amh_fz_reports_parts_tables_dev", sqlDialect);
+        addPaymentMartTable(datasetId);
+    }
 
-    def initialize_version(self, project_ids_list):
-        """Initialize a new version entry for the pipeline run with a list of project IDs."""
-        try:
-            if not self.conn and not self.get_db_connection():
-                return None
+    /**
+     * Add tables from AMH_FZ_REPORT_MARTS_TABLES_DEV dataset
+     */
+    private void addAmhFzReportMartsTablesDevTables() {
+        Identifier datasetId = Identifier.of("amh_fz_report_marts_tables_dev", sqlDialect);
+        addPaymentMartTable(datasetId);
+    }
 
-            if not self.create_version_master_table():
-                return None
+    private void addCmEventArrivalTable(Identifier datasetId) {
+        Identifier tableId = Identifier.of("cm_event_arrival", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
 
-            self.version_id = self.get_next_version_id()
-            self.project_ids = project_ids_list
-            project_ids_str = ','.join(project_ids_list)
-            
-            # Set extraction_date and start_time to current time
-            current_time = datetime.now()
-            self.extraction_date = current_time
-            self.end_time = current_time
-            self.start_time = self.end_time - timedelta(self.days)
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
 
-            cursor = self.conn.cursor()
-            _, _, _, schema, _, _, _ = get_db_url_and_schema()
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("alert", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.BOOLEAN, 0, 0)).build());
 
-            insert_query = f"""
-            INSERT INTO {schema}.version_master 
-            (version_id, project_ids, extraction_date, status, stage_name, start_time, end_time)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+    }
 
-            cursor.execute(insert_query, (
-                self.version_id,
-                project_ids_str,
-                self.extraction_date,
-                'RUNNING',
-                'Pipeline Initialization',
-                self.start_time,
-                self.end_time
-            ))
+    private void addEventStoreTable(Identifier datasetId) {
+        Identifier tableId = Identifier.of("event_store", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
 
-            self.conn.commit()
-            cursor.close()
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
 
-            logger.info(f"Version initialized: {self.version_id} for projects: {project_ids_str}")
-            return self.version_id
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("lifecycle_id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("event_occurred_at", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("event_type", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("outcomes_and_scores", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 1000, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("bq_insert_timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("source", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("customer_id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("channel_type", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 10, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sender_transaction_amount_dbl", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sender_transaction_currency", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 10, 0)).build());
 
-        except Exception as e:
-            logger.error(f"Error initializing version: {e}")
-            if self.conn: 
-                self.conn.rollback()
-            return None
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+    }
 
-    def append_project_id(self, new_project_id):
-        """Append a new project ID to the current version's project list"""
-        try:
-            if not self.conn or not self.version_id:
-                logger.error("No active version or connection")
-                return False
+    private void addCmEventStateUpdatesTable(Identifier datasetId) {
+        Identifier tableId = Identifier.of("cm_event_state_updates", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
 
-            # Add to local list if not already present
-            if new_project_id not in self.project_ids:
-                self.project_ids.append(new_project_id)
-                
-                cursor = self.conn.cursor()
-                _, _, _, schema, _, _, _ = get_db_url_and_schema()
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
 
-                project_ids_str = ','.join(self.project_ids)
-                update_query = f"UPDATE {schema}.version_master SET project_ids = %s WHERE version_id = %s"
-                
-                cursor.execute(update_query, (project_ids_str, self.version_id))
-                self.conn.commit()
-                cursor.close()
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("identifier", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedAt", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("stateMachineId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("ids", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.ARRAY, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("channelId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("statemachineid", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
 
-                logger.info(f"Appended project ID {new_project_id} to version {self.version_id}")
-                return True
-            else:
-                logger.info(f"Project ID {new_project_id} already exists in version {self.version_id}")
-                return True
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+    }
 
-        except Exception as e:
-            logger.error(f"Error appending project ID: {e}")
-            if self.conn: 
-                self.conn.rollback()
-            return False
+    private void addCmEventAssigneeUpdateTable(Identifier datasetId) {
+        Identifier tableId = Identifier.of("cm_event_assignee_update", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
 
-    def update_status(self, stage_name, status='IN_PROGRESS', error_message=None):
-        """Update the status and stage of the current version using only version_id."""
-        try:
-            if not self.conn or not self.version_id:
-                logger.error("No active version or connection")
-                return False
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
 
-            cursor = self.conn.cursor()
-            _, _, _, schema, _, _, _ = get_db_url_and_schema()
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("identifier", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedAt", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("ids", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.ARRAY, 0, 0)).build());
 
-            current_time = datetime.now()
-            params = []
-            
-            if status in ['COMPLETED', 'FAILED']:
-                update_query = f"""
-                UPDATE {schema}.version_master 
-                SET status = %s, stage_name = %s, end_time = %s
-                WHERE version_id = %s
-                """
-                params = [status, stage_name, current_time, self.version_id]
-            else:
-                # For IN_PROGRESS or RUNNING status
-                update_query = f"""
-                UPDATE {schema}.version_master 
-                SET status = %s, stage_name = %s 
-                WHERE version_id = %s
-                """
-                params = [status, stage_name, self.version_id]
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+    }
 
-            cursor.execute(update_query, tuple(params))
-            self.conn.commit()
-            cursor.close()
+    private void addCmEventQueueChangedTable(Identifier datasetId) {
+        Identifier tableId = Identifier.of("cm_event_queue_changed", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
 
-            logger.info(f"Status updated: {status} - {stage_name} for version {self.version_id}")
-            return True
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
 
-        except Exception as e:
-            logger.error(f"Error updating status: {e}")
-            if self.conn: 
-                self.conn.rollback()
-            return False
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("identifier", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("ids", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.ARRAY, 0, 0)).build());
 
-    def mark_step_completed(self, stage_name, status):
-        return self.update_status(stage_name, status)
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+    }
 
-    def mark_step_failed(self, stage_name, status):
-        return self.update_status(stage_name, status)
+    private void addRulesAuditTable(Identifier datasetId) {
+        Identifier tableId = Identifier.of("rules_audit", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
+
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
+
+        // Add columns for rules_audit table
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("workflow", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 1000, 0)).build());
+
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+    }
+
+    private void addWorkflowRulesView(Identifier datasetId) {
+        // This view is based on rules_audit with unnested workflow.rules
+        // The view columns are: rules.* except (name, description),
+        // rules.name as description, rules.description as name,
+        // workflow.name as workflow_name, workflow.username, workflow.timestamp, etc.
+        Identifier viewId = Identifier.of("workflow_rules_vw", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
+
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, viewId);
+
+        // Add all 22 columns from the view schema
+        // 1. actions (STRING, REPEATED)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("actions", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.ARRAY, 0, 0)).build());
+        // 2. createdAt (INTEGER, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("createdAt", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
+        // 3. createdBy (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("createdBy", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 4. id (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 5. originalId (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("originalId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 6. rulesProjectId (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("rulesProjectId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 7. rulesProjectSnapshotId (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("rulesProjectSnapshotId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 8. scoreEnabled (BOOLEAN, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("scoreEnabled", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.BOOLEAN, 0, 0)).build());
+        // 9. workflowRuleBlockName (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("workflowRuleBlockName", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 10. targetVarValue (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("targetVarValue", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 11. comment (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("comment", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
+        // 12. condition (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("condition", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 1000, 0)).build());
+        // 13. rulesProjectDesc (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("rulesProjectDesc", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
+        // 14. rulesProjectSnapshotDesc (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("rulesProjectSnapshotDesc", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
+        // 15. variables (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("variables", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 1000, 0)).build());
+        // 16. description (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("description", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
+        // 17. name (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
+        // 18. workflow_name (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("workflow_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 19. username (STRING, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("username", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        // 20. timestamp (INTEGER, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
+        // 21. timestamp_formatted (TIMESTAMP, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp_formatted", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        // 22. updatedTimestamp (TIMESTAMP, NULLABLE)
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+
+        // Add the SQL definition for the view
+        String viewSql = "CREATE VIEW amh_fz_fdr_dev_sit.workflow_rules_vw AS SELECT * EXCEPT(row_num) " +
+                "FROM ( " +
+                "  SELECT " +
+                "    rules.* EXCEPT(name, description), " +
+                "    rules.name AS description, " +
+                "    rules.description AS name, " +
+                "    workflow.name AS workflow_name, " +
+                "    workflow.username, " +
+                "    workflow.timestamp, " +
+                "    TIMESTAMP_MILLIS(workflow.timestamp) AS timestamp_formatted, " +
+                "    updatedTimestamp, " +
+                "    ROW_NUMBER() OVER(PARTITION BY id ORDER BY workflow.timestamp DESC) AS row_num " +
+                "  FROM AMH_FZ_FDR_PROD.rules_audit " +
+                "  LEFT JOIN UNNEST(workflow.rules) AS rules " +
+                ") " +
+                "WHERE row_num = 1";
+
+        catalog.addEntity(new View(namespace, viewId, columns, viewSql, System.currentTimeMillis()));
+    }
+
+    private void addAmhReportMartControlTable(Identifier datasetId) {
+        Identifier tableId = Identifier.of("amh_report_mart_control_table", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
+
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
+
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("procedure_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("report_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("dataset_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("frequency", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 20, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("start_time", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("end_time", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("status", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 20, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("description", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("duration_seconds", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
+
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+    }
+
+    private void addPaymentMartTable(Identifier datasetId) {
+        Identifier tableId = Identifier.of("payment_mart", sqlDialect);
+        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
+
+        List<Column> columns = new ArrayList<>();
+        int position = 1;
+        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
+
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("report_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("create_timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("action_on_alert_timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("result_on_alert_timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("entity", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("portfolio", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("channel", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("class", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("final_portfolio", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("statemachineID", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("final_state", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("payment_source", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("transaction_status", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sender_transaction_currency", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 10, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("number_of_payment_customers", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_amount_usd", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_original_amount", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("count_of_transactions", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("count_of_alerts", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_amount_by_alerts", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("number_of_alerted_customers", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_original_amount_by_alerts", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_amount_gbp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_amount_gbp_by_alerts", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("lob", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("load_datetime", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
+        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("group_by_flag", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
+
+        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
+    }
+}
 
 
-# Global instance
-_version_master_instance = None
 
-def get_version_master():
-    global _version_master_instance
-    if _version_master_instance is None:
-        _version_master_instance = VersionMaster()
-    return _version_master_instance
-
-def initialize_pipeline_version(project_ids_list):
-    """Initialize pipeline version with list of project IDs"""
-    if isinstance(project_ids_list, str):
-        project_ids_list = [pid.strip() for pid in project_ids_list.split(',')]
-    
-    vm = get_version_master()
-    return vm.initialize_version(project_ids_list)
-
-def append_pipeline_project_id(project_id):
-    """Append a project ID to current pipeline version"""
-    vm = get_version_master()
-    return vm.append_project_id(project_id)
-
-def mark_pipeline_step_completed(stage_name, status):
-    """Mark a pipeline step as completed with step tracking"""
-    vm = get_version_master()
-    return vm.mark_step_completed(stage_name, status)
-
-def mark_pipeline_step_failed(stage_name, status):
-    """Mark a pipeline step as failed with step tracking"""
-    vm = get_version_master()
-    return vm.mark_step_failed(stage_name, status)
-
-def close_version_master_connection():
-    vm = get_version_master()
-    vm.close_connection()
-
-# CLI Functions
-def cli_initialize_version(args):
-    """CLI function to initialize version"""
-    try:
-        if args.config_path:
-            os.environ['CONFIG_PATH'] = args.config_path
-        
-        project_ids = [pid.strip() for pid in args.project_ids.split(',')]
-        version_id = initialize_pipeline_version(project_ids)
-        
-        if version_id:
-            print(version_id)  # Output version ID for bash script to capture
-            return 0
-        else:
-            return 1
-    except Exception as e:
-        logger.error(f"Error initializing version: {e}")
-        return 1
-
-def cli_update_status(args):
-    """CLI function to update status"""
-    try:
-        if args.status == 'FAILED':
-            result = mark_pipeline_step_failed(args.stage, args.status)
-        else:
-            result = mark_pipeline_step_completed(args.stage, args.status)
-        
-        return 0 if result else 1
-    except Exception as e:
-        logger.error(f"Error updating status: {e}")
-        return 1
-
-def cli_append_project_id(args):
-    """CLI function to append project ID"""
-    try:
-        result = append_pipeline_project_id(args.project_id)
-        return 0 if result else 1
-    except Exception as e:
-        logger.error(f"Error appending project ID: {e}")
-        return 1
-
-def cli_close_connection(args):
-    """CLI function to close connection"""
-    try:
-        close_version_master_connection()
-        return 0
-    except Exception as e:
-        logger.error(f"Error closing connection: {e}")
-        return 1
-
-def cli_get_version(args):
-    """CLI function to get current version ID"""
-    try:
-        vm = get_version_master()
-        if vm.version_id:
-            print(vm.version_id)
-            return 0
-        else:
-            return 1
-    except Exception as e:
-        logger.error(f"Error getting version: {e}")
-        return 1
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Version Master CLI Utility")
-    
-    # Common arguments
-    parser.add_argument("--config-path", help="Config file path")
-    
-    # Create subparsers for different commands
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
-    
-    # Initialize version command
-    init_parser = subparsers.add_parser('init', help='Initialize version')
-    init_parser.add_argument('--project-ids', required=True, help='Comma-separated project IDs')
-    init_parser.set_defaults(func=cli_initialize_version)
-    
-    # Update status command
-    status_parser = subparsers.add_parser('update-status', help='Update pipeline status')
-    status_parser.add_argument('--stage', required=True, help='Stage name')
-    status_parser.add_argument('--status', required=True, choices=['RUNNING', 'IN_PROGRESS', 'COMPLETED', 'FAILED'], help='Status')
-    status_parser.set_defaults(func=cli_update_status)
-    
-    # Append project ID command
-    append_parser = subparsers.add_parser('append-project', help='Append project ID')
-    append_parser.add_argument('--project-id', required=True, help='Project ID to append')
-    append_parser.set_defaults(func=cli_append_project_id)
-    
-    # Close connection command
-    close_parser = subparsers.add_parser('close', help='Close version master connection')
-    close_parser.set_defaults(func=cli_close_connection)
-    
-    # Get version command
-    get_parser = subparsers.add_parser('get-version', help='Get current version ID')
-    get_parser.set_defaults(func=cli_get_version)
-    
-    args = parser.parse_args()
-    
-    if hasattr(args, 'func'):
-        exit_code = args.func(args)
-        exit(exit_code)
-    else:
-        parser.print_help()
-        exit(1)
