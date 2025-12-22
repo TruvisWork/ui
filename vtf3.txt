@@ -1,155 +1,163 @@
-package com.calcite_new.sql.core.processor.visitor;
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
+import numpy as np
 
-import com.calcite_new.core.model.EntityCatalog;
-import com.calcite_new.sql.model.enums.StatementType;
-import com.calcite_new.sql.model.entity.ColumnInfo;
-import com.calcite_new.sql.model.entity.EntityRelationship;
-import com.calcite_new.sql.model.entity.StatementContext;
-import com.calcite_new.sql.relationextractor.RelationshipExtractor;
-import lombok.Getter;
-import lombok.Setter;
-import lombok.extern.slf4j.Slf4j;
-import org.apache.calcite.sql.*;
-import org.apache.calcite.sql.util.SqlBasicVisitor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+# Load your data (assuming CSV format with columns: start_time, end_time, slot_seconds, query_type)
+# Example: df = pd.read_csv('your_data.csv')
+# For demo, creating sample data structure
+# Replace this with: df = pd.read_csv('your_file.csv')
 
-import java.util.*;
-
-@Slf4j
-public class SqlNodeVisitor extends SqlBasicVisitor<SqlNodeVisitor.Result> {
-    
-    private static final Logger staticLog = LoggerFactory.getLogger(SqlNodeVisitor.class);
-
-    @Getter
-    @Setter
-    public static class Result {
-        private StatementType statementType;
-        private final List<EntityRelationship> entityRelationships = new ArrayList<>();
-        private final List<ColumnInfo> columnInfos = new ArrayList<>();
-        private final StatementContext context = new StatementContext();
-        private final List<SqlIdentifier> sourceTables = new ArrayList<>();
-    }
-
-    private final Map<Class<? extends SqlCall>, StatementVisitor> statementVisitors;
-
-
-    public SqlNodeVisitor(String user, String database, String schema, RelationshipExtractor relationshipExtractor, EntityCatalog entityCatalog) {
-
-        // Use HashMap to allow more than 10 entries (Map.of has a limit)
-        this.statementVisitors = new HashMap<>();
-        this.statementVisitors.put(SqlSelect.class, new SelectVisitor(user, database, schema, relationshipExtractor, entityCatalog));
-        this.statementVisitors.put(SqlInsert.class, new InsertVisitor(user, database, schema, relationshipExtractor, entityCatalog));
-        this.statementVisitors.put(com.calcite_new.sql.SqlUpdate.class, new UpdateVisitor(user, database, schema, relationshipExtractor, entityCatalog));
-        this.statementVisitors.put(SqlDelete.class, new DeleteVisitor(user, database, schema, relationshipExtractor, entityCatalog));
-        this.statementVisitors.put(SqlWith.class, new WithVisitor(user, database, schema, relationshipExtractor, entityCatalog));
-    }
-
-    @Override
-    public Result visit(SqlCall call) {
-        if (call == null) {
-            return new Result();
-        }
-
-        StatementVisitor visitor = statementVisitors.get(call.getClass());
-        if (visitor != null) {
-            return visitor.visit(call);
-        }
-
-        return visitGenericCall(call);
-    }
-
-    @Override
-    public Result visit(SqlIdentifier id) {
-        Result result = new Result();
-        // Check if this is a SqlTableIdentifier (table reference)
-        if (id instanceof com.calcite_new.sql.SqlTableIdentifier) {
-            result.getSourceTables().add(id);
-            log.debug("SqlNodeVisitor.visit(SqlIdentifier): Added SqlTableIdentifier to sourceTables: {}",
-                    id.names != null ? String.join(".", id.names) : "null");
-        }
-        // For regular SqlIdentifier, we don't add it here to avoid adding column refs
-        // Tables should be added by SelectVisitor in FROM clause context
-        return result;
-    }
-
-    private Result visitGenericCall(SqlCall call) {
-        Result result = new Result();
-        String callType = call.getClass().getSimpleName();
-        if (call instanceof SqlBasicCall basicCall && basicCall.getOperator() != null) {
-            callType = callType + "(" + basicCall.getOperator().getName() + ")";
-        }
-        log.debug("visitGenericCall: Processing {} with {} operands", callType, call.getOperandList().size());
-        
-        for (int i = 0; i < call.getOperandList().size(); i++) {
-            SqlNode operand = call.getOperandList().get(i);
-            if (operand != null) {
-                log.debug("visitGenericCall: Processing operand {}, type: {}", i, operand.getClass().getSimpleName());
-                
-                // Explicitly handle SqlSelect to ensure it routes to SelectVisitor
-                Result subResult;
-                if (operand instanceof SqlSelect) {
-                    log.debug("visitGenericCall: Operand {} is SqlSelect, routing to SelectVisitor", i);
-                    StatementVisitor selectVisitor = statementVisitors.get(SqlSelect.class);
-                    if (selectVisitor != null) {
-                        subResult = selectVisitor.visit((SqlCall) operand);
-                    } else {
-                        subResult = operand.accept(this);
-                    }
-                } else {
-                    // For other operands, use accept which will recursively process
-                    subResult = operand.accept(this);
-                }
-                
-                if (subResult != null) {
-                    log.debug("visitGenericCall: Operand {} result has {} sourceTables: {}", 
-                            i, subResult.getSourceTables().size(),
-                            subResult.getSourceTables().stream()
-                                    .map(id -> id != null && id.names != null ? String.join(".", id.names) : "null")
-                                    .toList());
-                    mergeResults(result, subResult);
-                } else {
-                    log.debug("visitGenericCall: Operand {} result is null", i);
-                }
-            }
-        }
-        log.debug("visitGenericCall: Final result has {} sourceTables: {}", 
-                result.getSourceTables().size(),
-                result.getSourceTables().stream()
-                        .map(id -> id != null && id.names != null ? String.join(".", id.names) : "null")
-                        .toList());
-        return result;
-    }
-
-    public static void mergeResults(Result main, Result other) {
-        if (other == null) return;
-        int beforeTables = main.getSourceTables().size();
-        int otherTables = other.getSourceTables().size();
-        
-        if (main.entityRelationships != other.entityRelationships) {
-            other.getEntityRelationships().stream()
-                    .filter(relationship -> !main.getEntityRelationships().contains(relationship))
-                    .forEach(main.getEntityRelationships()::add);
-        }
-        if (main.columnInfos != other.columnInfos) {
-            other.getColumnInfos().stream()
-                    .filter(columnInfo -> !main.getColumnInfos().contains(columnInfo))
-                    .forEach(main.getColumnInfos()::add);
-        }
-        main.getSourceTables().addAll(other.getSourceTables());
-        
-        int afterTables = main.getSourceTables().size();
-        if (otherTables > 0) {
-            staticLog.debug("mergeResults: Merging {} tables from other result. Before: {}, After: {}. Tables: {}",
-                    otherTables, beforeTables, afterTables,
-                    other.getSourceTables().stream()
-                            .map(id -> id != null && id.names != null ? String.join(".", id.names) : "null")
-                            .toList());
-        }
-        
-        if (other.getContext() != null) {
-            main.getContext().merge(other.getContext());
-        }
-    }
+# Sample data structure - replace with your actual data
+data = {
+    'start_time': ['2025-11-21 10:00:00', '2025-11-21 10:05:00', '2025-11-21 10:10:00'],
+    'end_time': ['2025-11-21 10:30:00', '2025-11-21 10:15:00', '2025-11-21 10:40:00'],
+    'slot_seconds': [3000, 1500, 5000],
+    'query_type': ['procs', 'user_fired', 'sa_non_proc']
 }
+df = pd.DataFrame(data)
 
+# Convert to datetime
+df['start_time'] = pd.to_datetime(df['start_time'])
+df['end_time'] = pd.to_datetime(df['end_time'])
+
+# Calculate slots per second for each query
+df['duration_seconds'] = (df['end_time'] - df['start_time']).dt.total_seconds()
+df['slots_used'] = df['slot_seconds'] / df['duration_seconds']
+
+# Create time series for concurrent slot usage
+def calculate_concurrent_slots(df):
+    """Calculate concurrent slot usage over time"""
+    events = []
+    
+    # Create events for each query start and end
+    for idx, row in df.iterrows():
+        events.append({
+            'time': row['start_time'],
+            'slots_delta': row['slots_used'],
+            'query_type': row['query_type'],
+            'event': 'start'
+        })
+        events.append({
+            'time': row['end_time'],
+            'slots_delta': -row['slots_used'],
+            'query_type': row['query_type'],
+            'event': 'end'
+        })
+    
+    # Sort events by time
+    events_df = pd.DataFrame(events).sort_values('time')
+    
+    # Calculate running totals for each query type
+    time_series = []
+    current_slots = {'procs': 0, 'user_fired': 0, 'sa_non_proc': 0}
+    
+    for _, event in events_df.iterrows():
+        qtype = event['query_type']
+        current_slots[qtype] = max(0, current_slots[qtype] + event['slots_delta'])
+        
+        time_series.append({
+            'time': event['time'],
+            'procs': current_slots['procs'],
+            'user_fired': current_slots['user_fired'],
+            'sa_non_proc': current_slots['sa_non_proc'],
+            'total': sum(current_slots.values())
+        })
+    
+    return pd.DataFrame(time_series)
+
+# Calculate concurrent slot usage
+timeline_df = calculate_concurrent_slots(df)
+
+# Create visualization
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 12))
+
+# Plot 1: Individual query timelines (Gantt-style)
+colors = {'procs': '#e74c3c', 'user_fired': '#2ecc71', 'sa_non_proc': '#3498db'}
+y_pos = 0
+
+for idx, row in df.iterrows():
+    color = colors.get(row['query_type'], '#95a5a6')
+    ax1.barh(y_pos, 
+             (row['end_time'] - row['start_time']).total_seconds() / 3600,  # Convert to hours
+             left=mdates.date2num(row['start_time']),
+             height=row['slots_used'] / 100,  # Scale height by slot usage
+             color=color,
+             alpha=0.7,
+             edgecolor='black',
+             linewidth=0.5)
+    
+    # Add slot usage label
+    mid_time = row['start_time'] + (row['end_time'] - row['start_time']) / 2
+    ax1.text(mdates.date2num(mid_time), y_pos, 
+             f"{row['slots_used']:.0f}", 
+             ha='center', va='center', fontsize=8, fontweight='bold')
+    
+    y_pos += row['slots_used'] / 80  # Increment y position
+
+ax1.set_xlabel('Time', fontsize=12)
+ax1.set_ylabel('Query Timeline (height = slot usage)', fontsize=12)
+ax1.set_title('Individual Query Execution Timeline with Slot Usage', fontsize=14, fontweight='bold')
+ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+ax1.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+ax1.grid(True, alpha=0.3)
+
+# Create legend
+from matplotlib.patches import Patch
+legend_elements = [Patch(facecolor=colors[k], label=k) for k in colors.keys()]
+ax1.legend(handles=legend_elements, loc='upper right')
+
+# Plot 2: Stacked area chart showing concurrent slot usage over time
+ax2.fill_between(timeline_df['time'], 0, timeline_df['procs'], 
+                  label='procs', color=colors['procs'], alpha=0.7)
+ax2.fill_between(timeline_df['time'], timeline_df['procs'], 
+                  timeline_df['procs'] + timeline_df['sa_non_proc'],
+                  label='sa_non_proc', color=colors['sa_non_proc'], alpha=0.7)
+ax2.fill_between(timeline_df['time'], 
+                  timeline_df['procs'] + timeline_df['sa_non_proc'],
+                  timeline_df['total'],
+                  label='user_fired', color=colors['user_fired'], alpha=0.7)
+
+# Add total line
+ax2.plot(timeline_df['time'], timeline_df['total'], 
+         color='black', linewidth=2, label='Total Slots', linestyle='--')
+
+# Add peak markers
+peak_idx = timeline_df['total'].idxmax()
+peak_time = timeline_df.loc[peak_idx, 'time']
+peak_slots = timeline_df.loc[peak_idx, 'total']
+
+ax2.scatter([peak_time], [peak_slots], color='red', s=200, zorder=5, 
+            marker='o', edgecolors='black', linewidths=2)
+ax2.annotate(f'Peak: {peak_slots:.0f} slots\n{peak_time.strftime("%Y-%m-%d %H:%M")}',
+             xy=(peak_time, peak_slots), 
+             xytext=(20, 20), textcoords='offset points',
+             bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.7),
+             arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', lw=2))
+
+ax2.set_xlabel('Time', fontsize=12)
+ax2.set_ylabel('Concurrent Slot Usage', fontsize=12)
+ax2.set_title('Concurrent BigQuery Slot Usage Over Time', fontsize=14, fontweight='bold')
+ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
+ax2.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
+ax2.legend(loc='upper left')
+ax2.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('bigquery_slot_usage_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# Print statistics
+print("\n=== Slot Usage Statistics ===")
+print(f"Peak concurrent slot usage: {timeline_df['total'].max():.2f} slots")
+print(f"Peak time: {timeline_df.loc[timeline_df['total'].idxmax(), 'time']}")
+print(f"Average concurrent slot usage: {timeline_df['total'].mean():.2f} slots")
+print(f"Median concurrent slot usage: {timeline_df['total'].median():.2f} slots")
+print("\nBy Query Type:")
+for qtype in ['procs', 'user_fired', 'sa_non_proc']:
+    print(f"  {qtype}:")
+    print(f"    Peak: {timeline_df[qtype].max():.2f} slots")
+    print(f"    Average: {timeline_df[qtype].mean():.2f} slots")
