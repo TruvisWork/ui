@@ -22,22 +22,22 @@ print(f"Processing {len(df)} queries...")
 df['start_time'] = pd.to_datetime(df['start_time'])
 df['end_time'] = pd.to_datetime(df['end_time'])
 
-# Calculate duration and average slots per query
+# Calculate duration and instantaneous slot usage
 df['duration_seconds'] = (df['end_time'] - df['start_time']).dt.total_seconds()
 df['duration_seconds'] = df['duration_seconds'].replace(0, 1)  # Avoid division by zero
 
-# CRITICAL FIX: slots_used is the AVERAGE concurrent slots during query execution
-# slot_seconds = average_concurrent_slots × duration
-# Therefore: average_concurrent_slots = slot_seconds / duration
-df['avg_slots'] = df['slot_seconds'] / df['duration_seconds']
+# CORRECT: This gives us the average concurrent slots during the query's execution
+# If a query consumed 1000 slot_seconds over 10 seconds, it used 100 slots on average
+df['slots_per_second'] = df['slot_seconds'] / df['duration_seconds']
 
-print(f"Average slot usage per query range: {df['avg_slots'].min():.2f} to {df['avg_slots'].max():.2f}")
+print(f"Slot usage per query range: {df['slots_per_second'].min():.2f} to {df['slots_per_second'].max():.2f}")
 
 
-def calculate_concurrent_slots_fixed(df, bucket_size='15min'):
+def calculate_concurrent_slots_correct(df, bucket_size='15min'):
     """
-    Calculate TRUE concurrent slot usage over time
-    This counts how many slots are being used at any given moment
+    Calculate TRUE concurrent slot usage at each time point.
+    
+    The key insight: at any moment in time, total slots = sum of all running queries' slot rates
     """
     print(f"Using {bucket_size} time buckets...")
     
@@ -46,7 +46,7 @@ def calculate_concurrent_slots_fixed(df, bucket_size='15min'):
     max_time = df['end_time'].max()
     print(f"Time range: {min_time} to {max_time}")
     
-    # Create time buckets
+    # Create time buckets - these are our sampling points
     time_range = pd.date_range(
         start=min_time.floor(bucket_size),
         end=max_time.ceil(bucket_size),
@@ -55,32 +55,25 @@ def calculate_concurrent_slots_fixed(df, bucket_size='15min'):
     
     results = []
     
-    # For each time bucket, calculate concurrent slot usage
+    # For each time point, find all queries running and sum their slot rates
     for i, bucket_start in enumerate(time_range[:-1]):
         bucket_end = time_range[i + 1]
         bucket_mid = bucket_start + (bucket_end - bucket_start) / 2
         
-        # Find all queries running during this bucket
+        # Find all queries running at this time point
+        # A query is "running" if bucket overlaps with [start_time, end_time]
         running_queries = df[
             (df['start_time'] < bucket_end) & 
             (df['end_time'] > bucket_start)
         ]
         
-        # CRITICAL FIX: Calculate weighted average based on overlap
-        slots_by_type = {'procs': 0, 'user_fired': 0, 'sa_non_proc': 0}
-        
-        bucket_duration = (bucket_end - bucket_start).total_seconds()
-        
-        for _, query in running_queries.iterrows():
-            # Calculate overlap duration
-            overlap_start = max(query['start_time'], bucket_start)
-            overlap_end = min(query['end_time'], bucket_end)
-            overlap_duration = (overlap_end - overlap_start).total_seconds()
-            
-            # Weight the slot usage by overlap fraction
-            # If a query runs for 50% of the bucket, it contributes 50% of its slots
-            overlap_fraction = overlap_duration / bucket_duration
-            slots_by_type[query['query_type']] += query['avg_slots'] * overlap_fraction
+        # CORRECT: Just sum the instantaneous slot rates
+        # No weighting needed - if a query is active, it contributes its full rate
+        slots_by_type = {
+            'procs': running_queries[running_queries['query_type'] == 'procs']['slots_per_second'].sum(),
+            'user_fired': running_queries[running_queries['query_type'] == 'user_fired']['slots_per_second'].sum(),
+            'sa_non_proc': running_queries[running_queries['query_type'] == 'sa_non_proc']['slots_per_second'].sum()
+        }
         
         results.append({
             'time': bucket_mid,
@@ -97,13 +90,14 @@ def calculate_concurrent_slots_fixed(df, bucket_size='15min'):
 print("\nCalculating concurrent slot usage...")
 
 # Calculate with different granularities
-timeline_15min = calculate_concurrent_slots_fixed(df, '15min')
-timeline_4h = calculate_concurrent_slots_fixed(df, '4h')
+timeline_15min = calculate_concurrent_slots_correct(df, '15min')
+timeline_4h = calculate_concurrent_slots_correct(df, '4h')
 
 timeline_df = timeline_15min
 
 print(f"\nGenerated {len(timeline_df)} time points")
 print(f"Concurrent slots range: {timeline_df['total'].min():.2f} to {timeline_df['total'].max():.2f}")
+print(f"Peak concurrent queries: {timeline_df['query_count'].max()}")
 
 # Create visualization
 fig, ax = plt.subplots(1, 1, figsize=(20, 8))
@@ -146,18 +140,17 @@ ax.annotate(
     fontsize=11, fontweight='bold'
 )
 
-# FIXED: Better x-axis formatting
-# Determine appropriate interval based on data range
+# Better x-axis formatting
 days_range = (timeline_df['time'].max() - timeline_df['time'].min()).days
 
 if days_range <= 2:
-    major_interval = 4  # Every 4 hours for short range
+    major_interval = 4  # Every 4 hours
     date_fmt = '%m/%d %H:%M'
 elif days_range <= 7:
-    major_interval = 12  # Every 12 hours for week
+    major_interval = 12  # Every 12 hours
     date_fmt = '%m/%d %H:%M'
 else:
-    major_interval = 24  # Every day for longer range
+    major_interval = 24  # Every day
     date_fmt = '%m/%d'
 
 ax.xaxis.set_major_locator(mdates.HourLocator(interval=major_interval))
@@ -174,7 +167,7 @@ ax.set_title(
 ax.legend(loc='upper left', fontsize=11)
 ax.grid(True, alpha=0.3)
 
-# Rotate labels for better readability
+# Rotate labels
 plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
 
 plt.tight_layout()
@@ -191,6 +184,9 @@ print("="*60)
 print(f"Total queries: {len(df):,}")
 print(f"Time range: {df['start_time'].min()} to {df['end_time'].max()}")
 print(f"\nPeak concurrent usage: {timeline_df['total'].max():.2f} slots")
-print(f"Average concurrent usage: {timeline_df['total'].mean():.2f} slots")
+print(f"Concurrent queries at peak: {int(timeline_df.loc[peak_idx, 'query_count'])}")
+print(f"\nAverage concurrent usage: {timeline_df['total'].mean():.2f} slots")
+print(f"Median: {timeline_df['total'].median():.2f} slots")
 print(f"90th percentile: {timeline_df['total'].quantile(0.90):.2f} slots")
+print(f"95th percentile: {timeline_df['total'].quantile(0.95):.2f} slots")
 print("="*60)
