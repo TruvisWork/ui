@@ -1,383 +1,150 @@
-package com.calcite_new.sql.core.processor.visitor;
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
-import com.calcite_new.core.dialect.Product;
-import com.calcite_new.core.dialect.sql.BigQuerySqlDialect;
-import com.calcite_new.core.dialect.sql.SqlDialect;
-import com.calcite_new.core.model.EntityCatalog;
-import com.calcite_new.core.model.Identifier;
-import com.calcite_new.core.model.entity.Column;
-import com.calcite_new.core.model.entity.DataType;
-import org.apache.calcite.sql.type.SqlTypeName;
-import com.calcite_new.core.model.entity.Table;
-import com.calcite_new.core.model.entity.View;
+# =========================================================
+# 1. LOAD DATA (3 FILES)
+# =========================================================
 
-import java.util.ArrayList;
-import java.util.List;
-
-/**
- * Builds an EntityCatalog with all tables referenced in proc.sql queries.
- */
-public class ProcQueriesTestCatalogBuilder {
-    private EntityCatalog catalog = new EntityCatalog();
-    private final SqlDialect sqlDialect = new BigQuerySqlDialect();
-    private final Identifier dialect = Identifier.of(Product.BIG_QUERY.name, sqlDialect);
-    private Identifier projectName = Identifier.of("test", sqlDialect);
-
-    /**
-     * Creates an EntityCatalog with all required tables
-     */
-    public EntityCatalog build() {
-        catalog = new EntityCatalog();
-
-        addAmhFzFdrDevSitTables();
-        addAmhFzFdrProdTables();
-        addAmhFzReportsPartsTablesDevTables();
-        addAmhFzReportMartsTablesDevTables();
-
-        return catalog;
-    }
-
-    /**
-     * Sets the project name for the catalog
-     */
-    public ProcQueriesTestCatalogBuilder withProjectName(String projectName) {
-        this.projectName = Identifier.of(projectName, sqlDialect);
-        return this;
-    }
-
-    /**
-     * Sets the catalog to use (allows building on an existing catalog)
-     */
-    public ProcQueriesTestCatalogBuilder withCatalog(EntityCatalog catalog) {
-        this.catalog = catalog;
-        return this;
-    }
-
-    /**
-     * Creates a table with the given name and columns in the specified dataset
-     */
-    public ProcQueriesTestCatalogBuilder withTable(String datasetName, String tableName, List<Column> columns) {
-        Identifier datasetId = Identifier.of(datasetName, sqlDialect);
-        Identifier tableId = Identifier.of(tableName, sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-        return this;
-    }
-
-    /**
-     * Creates a view with the given name, columns, and SQL definition in the specified dataset
-     */
-    public ProcQueriesTestCatalogBuilder withView(String datasetName, String viewName, List<Column> columns, String viewSql) {
-        Identifier datasetId = Identifier.of(datasetName, sqlDialect);
-        Identifier viewId = Identifier.of(viewName, sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        catalog.addEntity(new View(namespace, viewId, columns, viewSql, System.currentTimeMillis()));
-        return this;
-    }
-
-    /**
-     * Helper method to create a column with the given name, position, and data type
-     */
-    public static Column createColumn(String datasetName, String tableName, String columnName, int position, DataType dataType) {
-        SqlDialect sqlDialect = new BigQuerySqlDialect();
-        Identifier dialect = Identifier.of(Product.BIG_QUERY.name, sqlDialect);
-        Identifier projectName = Identifier.of("test", sqlDialect);
-        Identifier datasetId = Identifier.of(datasetName, sqlDialect);
-        Identifier tableId = Identifier.of(tableName, sqlDialect);
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        return Column.builder()
-                .namespace(columnNamespace)
-                .name(Identifier.of(columnName, sqlDialect))
-                .dialect(sqlDialect)
-                .ordinalPosition(position)
-                .type(dataType)
-                .build();
-    }
-
-    /**
-     * Add tables from AMH_FZ_FDR_DEV_SIT dataset
-     */
-    private void addAmhFzFdrDevSitTables() {
-        Identifier datasetId = Identifier.of("amh_fz_fdr_dev_sit", sqlDialect);
-        addCmEventArrivalTable(datasetId);
-        addEventStoreTable(datasetId);
-        addCmEventStateUpdatesTable(datasetId);
-        addCmEventAssigneeUpdateTable(datasetId);
-        addCmEventQueueChangedTable(datasetId);
-        addWorkflowRulesView(datasetId);
-        addAmhReportMartControlTable(datasetId);
-        addRulesAuditTable(datasetId);
-    }
-
-    private void addAmhFzFdrProdTables() {
-        Identifier datasetId = Identifier.of("amh_fz_fdr_prod", sqlDialect);
-        addRulesAuditTable(datasetId);
-    }
-
-    /**
-     * Add tables from AMH_FZ_REPORTS_PARTS_TABLES_DEV dataset
-     */
-    private void addAmhFzReportsPartsTablesDevTables() {
-        Identifier datasetId = Identifier.of("amh_fz_reports_parts_tables_dev", sqlDialect);
-        addPaymentMartTable(datasetId);
-    }
-
-    /**
-     * Add tables from AMH_FZ_REPORT_MARTS_TABLES_DEV dataset
-     */
-    private void addAmhFzReportMartsTablesDevTables() {
-        Identifier datasetId = Identifier.of("amh_fz_report_marts_tables_dev", sqlDialect);
-        addPaymentMartTable(datasetId);
-    }
-
-    private void addCmEventArrivalTable(Identifier datasetId) {
-        Identifier tableId = Identifier.of("cm_event_arrival", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("alert", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.BOOLEAN, 0, 0)).build());
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-    }
-
-    private void addEventStoreTable(Identifier datasetId) {
-        Identifier tableId = Identifier.of("event_store", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("lifecycle_id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("event_occurred_at", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("event_type", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("outcomes_and_scores", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 1000, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("bq_insert_timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("source", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("customer_id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("channel_type", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 10, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sender_transaction_amount_dbl", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sender_transaction_currency", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 10, 0)).build());
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-    }
-
-    private void addCmEventStateUpdatesTable(Identifier datasetId) {
-        Identifier tableId = Identifier.of("cm_event_state_updates", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("identifier", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedAt", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("stateMachineId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("ids", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.ARRAY, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("channelId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("statemachineid", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-    }
-
-    private void addCmEventAssigneeUpdateTable(Identifier datasetId) {
-        Identifier tableId = Identifier.of("cm_event_assignee_update", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("identifier", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedAt", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("ids", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.ARRAY, 0, 0)).build());
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-    }
-
-    private void addCmEventQueueChangedTable(Identifier datasetId) {
-        Identifier tableId = Identifier.of("cm_event_queue_changed", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("identifier", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("ids", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.ARRAY, 0, 0)).build());
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-    }
-
-    private void addRulesAuditTable(Identifier datasetId) {
-        Identifier tableId = Identifier.of("rules_audit", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        // Add columns for rules_audit table
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("workflow", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 1000, 0)).build());
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-    }
-
-    private void addWorkflowRulesView(Identifier datasetId) {
-        // This view is based on rules_audit with unnested workflow.rules
-        // The view columns are: rules.* except (name, description),
-        // rules.name as description, rules.description as name,
-        // workflow.name as workflow_name, workflow.username, workflow.timestamp, etc.
-        Identifier viewId = Identifier.of("workflow_rules_vw", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, viewId);
-
-        // Add all 22 columns from the view schema
-        // 1. actions (STRING, REPEATED)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("actions", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.ARRAY, 0, 0)).build());
-        // 2. createdAt (INTEGER, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("createdAt", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
-        // 3. createdBy (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("createdBy", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 4. id (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("id", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 5. originalId (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("originalId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 6. rulesProjectId (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("rulesProjectId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 7. rulesProjectSnapshotId (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("rulesProjectSnapshotId", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 8. scoreEnabled (BOOLEAN, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("scoreEnabled", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.BOOLEAN, 0, 0)).build());
-        // 9. workflowRuleBlockName (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("workflowRuleBlockName", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 10. targetVarValue (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("targetVarValue", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 11. comment (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("comment", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
-        // 12. condition (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("condition", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 1000, 0)).build());
-        // 13. rulesProjectDesc (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("rulesProjectDesc", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
-        // 14. rulesProjectSnapshotDesc (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("rulesProjectSnapshotDesc", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
-        // 15. variables (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("variables", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 1000, 0)).build());
-        // 16. description (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("description", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
-        // 17. name (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
-        // 18. workflow_name (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("workflow_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 19. username (STRING, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("username", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        // 20. timestamp (INTEGER, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
-        // 21. timestamp_formatted (TIMESTAMP, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp_formatted", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        // 22. updatedTimestamp (TIMESTAMP, NULLABLE)
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("updatedTimestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-
-        // Add the SQL definition for the view
-        String viewSql = "CREATE VIEW amh_fz_fdr_dev_sit.workflow_rules_vw AS SELECT * EXCEPT(row_num) " +
-                "FROM ( " +
-                "  SELECT " +
-                "    rules.* EXCEPT(name, description), " +
-                "    rules.name AS description, " +
-                "    rules.description AS name, " +
-                "    workflow.name AS workflow_name, " +
-                "    workflow.username, " +
-                "    workflow.timestamp, " +
-                "    TIMESTAMP_MILLIS(workflow.timestamp) AS timestamp_formatted, " +
-                "    updatedTimestamp, " +
-                "    ROW_NUMBER() OVER(PARTITION BY id ORDER BY workflow.timestamp DESC) AS row_num " +
-                "  FROM AMH_FZ_FDR_PROD.rules_audit " +
-                "  LEFT JOIN UNNEST(workflow.rules) AS rules " +
-                ") " +
-                "WHERE row_num = 1";
-
-        catalog.addEntity(new View(namespace, viewId, columns, viewSql, System.currentTimeMillis()));
-    }
-
-    private void addAmhReportMartControlTable(Identifier datasetId) {
-        Identifier tableId = Identifier.of("amh_report_mart_control_table", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("procedure_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("report_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("dataset_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("frequency", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 20, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("start_time", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("end_time", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("status", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 20, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("description", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 500, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("duration_seconds", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-    }
-
-    private void addPaymentMartTable(Identifier datasetId) {
-        Identifier tableId = Identifier.of("payment_mart", sqlDialect);
-        List<Identifier> namespace = List.of(dialect, projectName, datasetId);
-
-        List<Column> columns = new ArrayList<>();
-        int position = 1;
-        List<Identifier> columnNamespace = List.of(dialect, projectName, datasetId, tableId);
-
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("report_name", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("create_timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("action_on_alert_timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("result_on_alert_timestamp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("entity", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("portfolio", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("channel", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("class", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("final_portfolio", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("statemachineID", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("final_state", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("payment_source", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 100, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("transaction_status", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sender_transaction_currency", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 10, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("number_of_payment_customers", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_amount_usd", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_original_amount", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("count_of_transactions", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("count_of_alerts", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_amount_by_alerts", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("number_of_alerted_customers", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.INTEGER, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_original_amount_by_alerts", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_amount_gbp", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("sum_of_transaction_amount_gbp_by_alerts", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.DECIMAL, 18, 2)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("lob", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("load_datetime", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.TIMESTAMP, 0, 0)).build());
-        columns.add(Column.builder().namespace(columnNamespace).name(Identifier.of("group_by_flag", sqlDialect)).dialect(sqlDialect).ordinalPosition(position++).type(DataType.create(SqlTypeName.VARCHAR, 50, 0)).build());
-
-        catalog.addEntity(new Table(namespace, tableId, columns, System.currentTimeMillis()));
-    }
+files = {
+    'procs': 'procs.csv',
+    'user_fired': 'user_fired.csv',
+    'sa_non_proc': 'sa_non_proc.csv'
 }
 
+dfs = []
+for qtype, path in files.items():
+    df = pd.read_csv(path)
+    df['query_type'] = qtype
+    dfs.append(df)
 
+df = pd.concat(dfs, ignore_index=True)
 
+# Convert to datetime
+df['start_time'] = pd.to_datetime(df['start_time'])
+df['end_time'] = pd.to_datetime(df['end_time'])
+
+# Duration & average slot rate
+df['duration_seconds'] = (
+    df['end_time'] - df['start_time']
+).dt.total_seconds().clip(lower=1)
+
+df['slots_per_second'] = df['slot_seconds'] / df['duration_seconds']
+
+print(f"Loaded {len(df):,} queries")
+print(f"Time range: {df['start_time'].min()} → {df['end_time'].max()}")
+
+# =========================================================
+# 2. BUILD CONCURRENT SLOT TIMELINE (5-MIN RESOLUTION)
+# =========================================================
+
+def compute_concurrency(df, freq='5min'):
+    start = df['start_time'].min().floor(freq)
+    end = df['end_time'].max().ceil(freq)
+
+    timeline = pd.date_range(start, end, freq=freq)
+    rows = []
+
+    for t0, t1 in zip(timeline[:-1], timeline[1:]):
+        running = df[
+            (df['start_time'] < t1) &
+            (df['end_time'] > t0)
+        ]
+
+        rows.append({
+            'time': t0 + (t1 - t0)/2,
+            'total_slots': running['slots_per_second'].sum(),
+            'procs': running.loc[running['query_type']=='procs','slots_per_second'].sum(),
+            'user_fired': running.loc[running['query_type']=='user_fired','slots_per_second'].sum(),
+            'sa_non_proc': running.loc[running['query_type']=='sa_non_proc','slots_per_second'].sum(),
+            'query_count': len(running)
+        })
+
+    return pd.DataFrame(rows)
+
+timeline = compute_concurrency(df, freq='5min')
+
+# =========================================================
+# 3. PEAK CONCURRENT SLOT USAGE
+# =========================================================
+
+peak = timeline.loc[timeline['total_slots'].idxmax()]
+
+print("\n" + "="*60)
+print("PEAK CONCURRENT SLOT USAGE")
+print("="*60)
+print(f"Time                : {peak['time']}")
+print(f"Total slots         : {peak['total_slots']:.2f}")
+print(f"Concurrent queries  : {int(peak['query_count'])}")
+print("="*60)
+
+# =========================================================
+# 4. 24-HOUR AVERAGE PROFILE (CLEAN VIEW)
+# =========================================================
+
+timeline['hour'] = timeline['time'].dt.hour
+
+hourly_avg = (
+    timeline
+    .groupby('hour')[['total_slots','procs','user_fired','sa_non_proc']]
+    .mean()
+    .reset_index()
+)
+
+# =========================================================
+# 5. PLOTS
+# =========================================================
+
+# --- A. Full timeline with peak marker ---
+plt.figure(figsize=(16,6))
+plt.plot(timeline['time'], timeline['total_slots'], label='Total Slots', linewidth=1.5)
+
+plt.scatter(
+    peak['time'],
+    peak['total_slots'],
+    color='red',
+    zorder=5,
+    label=f"Peak {peak['total_slots']:.1f} slots"
+)
+
+plt.title('Concurrent BigQuery Slot Usage – 30 Days')
+plt.xlabel('Time')
+plt.ylabel('Concurrent Slots')
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# --- B. Average 24-hour day (stacked) ---
+plt.figure(figsize=(14,6))
+
+plt.stackplot(
+    hourly_avg['hour'],
+    hourly_avg['procs'],
+    hourly_avg['sa_non_proc'],
+    hourly_avg['user_fired'],
+    labels=['procs','sa_non_proc','user_fired'],
+    alpha=0.85
+)
+
+plt.xlabel('Hour of Day (0–23)')
+plt.ylabel('Average Concurrent Slots')
+plt.title('Average BigQuery Slot Usage – 24 Hour Profile (30 Days)')
+plt.xticks(range(24))
+plt.legend(loc='upper left')
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# =========================================================
+# 6. SUMMARY STATS
+# =========================================================
+
+print("\n" + "="*60)
+print("SUMMARY STATISTICS")
+print("="*60)
+print(f"Average concurrent slots : {timeline['total_slots'].mean():.2f}")
+print(f"Median concurrent slots  : {timeline['total_slots'].median():.2f}")
+print(f"P90 concurrent slots     : {timeline['total_slots'].quantile(0.90):.2f}")
+print(f"P95 concurrent slots     : {timeline['total_slots'].quantile(0.95):.2f}")
+print("="*60)
