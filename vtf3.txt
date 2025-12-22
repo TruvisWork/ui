@@ -4,10 +4,8 @@ import matplotlib.dates as mdates
 from datetime import datetime
 import numpy as np
 
-# Load your data (assuming CSV format with columns: start_time, end_time, slot_seconds, query_type)
-# Example: df = pd.read_csv('your_data.csv')
-# For demo, creating sample data structure
-# Replace this with: df = pd.read_csv('your_file.csv')
+# Load your data
+# df = pd.read_csv('your_data.csv')
 
 # Sample data structure - replace with your actual data
 data = {
@@ -18,6 +16,8 @@ data = {
 }
 df = pd.DataFrame(data)
 
+print(f"Processing {len(df)} queries...")
+
 # Convert to datetime
 df['start_time'] = pd.to_datetime(df['start_time'])
 df['end_time'] = pd.to_datetime(df['end_time'])
@@ -26,9 +26,15 @@ df['end_time'] = pd.to_datetime(df['end_time'])
 df['duration_seconds'] = (df['end_time'] - df['start_time']).dt.total_seconds()
 df['slots_used'] = df['slot_seconds'] / df['duration_seconds']
 
-# Create time series for concurrent slot usage
-def calculate_concurrent_slots(df):
-    """Calculate concurrent slot usage over time"""
+# OPTIMIZED: Limit queries shown in top chart (for 30-day data)
+MAX_QUERIES_TO_PLOT = 200  # Increase to 200 for 30-day overview
+df_top = df.nlargest(MAX_QUERIES_TO_PLOT, 'slots_used') if len(df) > MAX_QUERIES_TO_PLOT else df
+
+print(f"Plotting top {len(df_top)} queries in timeline chart...")
+
+# Create time series for concurrent slot usage - OPTIMIZED
+def calculate_concurrent_slots_optimized(df):
+    """Calculate concurrent slot usage over time - optimized version"""
     events = []
     
     # Create events for each query start and end
@@ -47,13 +53,21 @@ def calculate_concurrent_slots(df):
         })
     
     # Sort events by time
-    events_df = pd.DataFrame(events).sort_values('time')
+    events_df = pd.DataFrame(events).sort_values('time').reset_index(drop=True)
     
-    # Calculate running totals for each query type
+    # OPTIMIZATION: Resample to reduce data points
+    # Group events by 4-hour intervals for 30-day data
+    events_df['time_rounded'] = events_df['time'].dt.floor('4h')  # Round to nearest 4 hours
+    
+    # Aggregate events in same time bucket
+    grouped_events = events_df.groupby(['time_rounded', 'query_type'])['slots_delta'].sum().reset_index()
+    grouped_events = grouped_events.rename(columns={'time_rounded': 'time'}).sort_values('time')
+    
+    # Calculate running totals
     time_series = []
     current_slots = {'procs': 0, 'user_fired': 0, 'sa_non_proc': 0}
     
-    for _, event in events_df.iterrows():
+    for _, event in grouped_events.iterrows():
         qtype = event['query_type']
         current_slots[qtype] = max(0, current_slots[qtype] + event['slots_delta'])
         
@@ -67,71 +81,79 @@ def calculate_concurrent_slots(df):
     
     return pd.DataFrame(time_series)
 
-# Calculate concurrent slot usage
-timeline_df = calculate_concurrent_slots(df)
+print("Calculating concurrent slot usage...")
+timeline_df = calculate_concurrent_slots_optimized(df)
+print(f"Generated {len(timeline_df)} time points for timeline")
 
 # Create visualization
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 12))
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10))
 
-# Plot 1: Individual query timelines (Gantt-style)
+# Plot 1: SIMPLIFIED Individual query timelines
 colors = {'procs': '#e74c3c', 'user_fired': '#2ecc71', 'sa_non_proc': '#3498db'}
-y_pos = 0
 
-for idx, row in df.iterrows():
-    color = colors.get(row['query_type'], '#95a5a6')
-    ax1.barh(y_pos, 
-             (row['end_time'] - row['start_time']).total_seconds() / 3600,  # Convert to hours
-             left=mdates.date2num(row['start_time']),
-             height=row['slots_used'] / 100,  # Scale height by slot usage
-             color=color,
-             alpha=0.7,
-             edgecolor='black',
-             linewidth=0.5)
+print("Rendering timeline chart...")
+
+# Group by query type for better visualization
+for qtype in ['procs', 'user_fired', 'sa_non_proc']:
+    df_type = df_top[df_top['query_type'] == qtype].sort_values('start_time')
     
-    # Add slot usage label
-    mid_time = row['start_time'] + (row['end_time'] - row['start_time']) / 2
-    ax1.text(mdates.date2num(mid_time), y_pos, 
-             f"{row['slots_used']:.0f}", 
-             ha='center', va='center', fontsize=8, fontweight='bold')
-    
-    y_pos += row['slots_used'] / 80  # Increment y position
+    for idx, row in df_type.iterrows():
+        duration_hours = (row['end_time'] - row['start_time']).total_seconds() / 3600
+        
+        # Simple bar without text labels for speed
+        ax1.barh(idx, 
+                 duration_hours,
+                 left=mdates.date2num(row['start_time']),
+                 height=0.8,
+                 color=colors[qtype],
+                 alpha=0.6,
+                 edgecolor='none')  # No edge color for speed
 
 ax1.set_xlabel('Time', fontsize=12)
-ax1.set_ylabel('Query Timeline (height = slot usage)', fontsize=12)
-ax1.set_title('Individual Query Execution Timeline with Slot Usage', fontsize=14, fontweight='bold')
-ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-ax1.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+ax1.set_ylabel('Query Index', fontsize=12)
+ax1.set_title(f'Query Execution Timeline - Top {len(df_top)} Queries by Slot Usage (30 Days)', 
+              fontsize=14, fontweight='bold')
+ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+ax1.xaxis.set_major_locator(mdates.DayLocator(interval=2))  # Show every 2 days
 plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
-ax1.grid(True, alpha=0.3)
+ax1.grid(True, alpha=0.3, axis='x')
 
-# Create legend
+# Legend
 from matplotlib.patches import Patch
-legend_elements = [Patch(facecolor=colors[k], label=k) for k in colors.keys()]
+legend_elements = [Patch(facecolor=colors[k], label=k, alpha=0.6) for k in colors.keys()]
 ax1.legend(handles=legend_elements, loc='upper right')
 
-# Plot 2: Stacked area chart showing concurrent slot usage over time
+# Plot 2: Concurrent slot usage - OPTIMIZED
+print("Rendering concurrent usage chart...")
+
+# Use fill_between with fewer points
 ax2.fill_between(timeline_df['time'], 0, timeline_df['procs'], 
-                  label='procs', color=colors['procs'], alpha=0.7)
+                  label='procs', color=colors['procs'], alpha=0.7, step='post')
 ax2.fill_between(timeline_df['time'], timeline_df['procs'], 
                   timeline_df['procs'] + timeline_df['sa_non_proc'],
-                  label='sa_non_proc', color=colors['sa_non_proc'], alpha=0.7)
+                  label='sa_non_proc', color=colors['sa_non_proc'], alpha=0.7, step='post')
 ax2.fill_between(timeline_df['time'], 
                   timeline_df['procs'] + timeline_df['sa_non_proc'],
                   timeline_df['total'],
-                  label='user_fired', color=colors['user_fired'], alpha=0.7)
+                  label='user_fired', color=colors['user_fired'], alpha=0.7, step='post')
 
-# Add total line
-ax2.plot(timeline_df['time'], timeline_df['total'], 
-         color='black', linewidth=2, label='Total Slots', linestyle='--')
+# Total line - downsample if too many points (for 30-day data)
+if len(timeline_df) > 500:
+    timeline_plot = timeline_df.iloc[::len(timeline_df)//500]  # Sample to ~500 points
+else:
+    timeline_plot = timeline_df
 
-# Add peak markers
+ax2.plot(timeline_plot['time'], timeline_plot['total'], 
+         color='black', linewidth=2, label='Total Slots', linestyle='--', alpha=0.8)
+
+# Peak marker
 peak_idx = timeline_df['total'].idxmax()
 peak_time = timeline_df.loc[peak_idx, 'time']
 peak_slots = timeline_df.loc[peak_idx, 'total']
 
 ax2.scatter([peak_time], [peak_slots], color='red', s=200, zorder=5, 
             marker='o', edgecolors='black', linewidths=2)
-ax2.annotate(f'Peak: {peak_slots:.0f} slots\n{peak_time.strftime("%Y-%m-%d %H:%M")}',
+ax2.annotate(f'Peak: {peak_slots:.0f} slots\n{peak_time.strftime("%m/%d %H:%M")}',
              xy=(peak_time, peak_slots), 
              xytext=(20, 20), textcoords='offset points',
              bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.7),
@@ -139,25 +161,33 @@ ax2.annotate(f'Peak: {peak_slots:.0f} slots\n{peak_time.strftime("%Y-%m-%d %H:%M
 
 ax2.set_xlabel('Time', fontsize=12)
 ax2.set_ylabel('Concurrent Slot Usage', fontsize=12)
-ax2.set_title('Concurrent BigQuery Slot Usage Over Time', fontsize=14, fontweight='bold')
-ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-ax2.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+ax2.set_title('Concurrent BigQuery Slot Usage Over Time (30 Days, 4-Hour Buckets)', 
+              fontsize=14, fontweight='bold')
+ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d'))
+ax2.xaxis.set_major_locator(mdates.DayLocator(interval=2))  # Show every 2 days
 plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
 ax2.legend(loc='upper left')
 ax2.grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig('bigquery_slot_usage_analysis.png', dpi=300, bbox_inches='tight')
+
+print("Saving figure...")
+plt.savefig('bigquery_slot_usage_analysis.png', dpi=150, bbox_inches='tight')  # Reduced DPI
+print("Done! Figure saved.")
+
 plt.show()
 
 # Print statistics
 print("\n=== Slot Usage Statistics ===")
+print(f"Total queries analyzed: {len(df)}")
 print(f"Peak concurrent slot usage: {timeline_df['total'].max():.2f} slots")
 print(f"Peak time: {timeline_df.loc[timeline_df['total'].idxmax(), 'time']}")
 print(f"Average concurrent slot usage: {timeline_df['total'].mean():.2f} slots")
 print(f"Median concurrent slot usage: {timeline_df['total'].median():.2f} slots")
 print("\nBy Query Type:")
 for qtype in ['procs', 'user_fired', 'sa_non_proc']:
-    print(f"  {qtype}:")
-    print(f"    Peak: {timeline_df[qtype].max():.2f} slots")
-    print(f"    Average: {timeline_df[qtype].mean():.2f} slots")
+    count = len(df[df['query_type'] == qtype])
+    if count > 0:
+        print(f"  {qtype} ({count} queries):")
+        print(f"    Peak: {timeline_df[qtype].max():.2f} slots")
+        print(f"    Average: {timeline_df[qtype].mean():.2f} slots")
