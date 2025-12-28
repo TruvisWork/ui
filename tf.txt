@@ -4,17 +4,13 @@ BigQuery Slot Usage Analysis - Enhanced with Candlestick Charts
 ================================================================================
 
 CONFIGURABLE TIMEFRAMES:
-- 1s: Raw second-level data (default)
-- 15min: 15-minute candles
+- 1s: Raw second-level data
+- 15min: 15-minute candles  
 - 4h: 4-hour candles
 - 1d: Daily candles
 - 7d: Weekly candles
 
-CANDLESTICK INTERPRETATION (like stock market):
-- Open: First slot value in the period
-- High: Maximum slots in the period
-- Low: Minimum slots in the period
-- Close: Last slot value in the period
+All metrics (p50, p90, p95, avg, etc.) are calculated FOR THE SELECTED TIMEFRAME.
 
 ================================================================================
 """
@@ -22,10 +18,9 @@ CANDLESTICK INTERPRETATION (like stock market):
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-import matplotlib.dates as mdates
 from datetime import datetime
 import argparse
+import sys
 
 # ==========================
 # CONFIG
@@ -33,10 +28,10 @@ import argparse
 CSV_FILE = "input.csv"
 OUTPUT_PREFIX = "slot_analysis"
 
-# Timeframe options
+# Timeframe options (user-friendly -> pandas resample format)
 TIMEFRAME_MAP = {
     "1s": "1s",
-    "1min": "1min",
+    "1min": "1min", 
     "15min": "15min",
     "1h": "1h",
     "4h": "4h",
@@ -52,7 +47,6 @@ parser.add_argument('--timeframe', '-t', type=str, default='15min',
 args = parser.parse_args()
 
 CANDLE_TIMEFRAME = TIMEFRAME_MAP[args.timeframe]
-print(f"Using candlestick timeframe: {args.timeframe}")
 
 # ==========================
 # LOAD DATA
@@ -60,68 +54,80 @@ print(f"Using candlestick timeframe: {args.timeframe}")
 print("="*70)
 print("BIGQUERY SLOT USAGE ANALYSIS")
 print("="*70)
+print(f"\n⏱️  Selected Timeframe: {args.timeframe}")
 
 df = pd.read_csv(CSV_FILE)
+print(f"📂 Loaded {len(df)} rows from {CSV_FILE}")
 
 # Handle both column naming conventions
 if "period_start" in df.columns and "period_slot_ms" in df.columns:
     df["time"] = pd.to_datetime(df["period_start"])
     df["concurrent_slots"] = df["period_slot_ms"] / 1000
+    print("   Using: period_slot_ms / 1000")
 elif "period_start" in df.columns and "concurrent_slots" in df.columns:
     df["time"] = pd.to_datetime(df["period_start"])
+    print("   Using: pre-calculated concurrent_slots")
 else:
-    raise ValueError("Expected columns: period_start with period_slot_ms or concurrent_slots")
+    print(f"ERROR: Unexpected columns: {df.columns.tolist()}")
+    sys.exit(1)
 
 # Aggregate if multiple rows per timestamp
-if df.groupby("time").size().max() > 1:
-    concurrent = (
-        df.groupby("time")["concurrent_slots"]
-        .sum()
-        .reset_index()
-    )
-    print("Note: Summing multiple rows per timestamp")
+rows_per_ts = df.groupby("time").size().max()
+if rows_per_ts > 1:
+    concurrent_raw = df.groupby("time")["concurrent_slots"].sum()
+    print(f"   Aggregated: summed {rows_per_ts} max rows per timestamp")
 else:
-    concurrent = df[["time", "concurrent_slots"]].copy()
-    print("Note: Data already grouped")
+    concurrent_raw = df.set_index("time")["concurrent_slots"]
+    print(f"   No aggregation needed")
 
-concurrent = concurrent.set_index("time").sort_index()
-
-# ==========================
-# CALCULATE OHLC CANDLES
-# ==========================
-def create_ohlc(data, freq):
-    """Create OHLC (Open, High, Low, Close) candlestick data"""
-    ohlc = data["concurrent_slots"].resample(freq).agg({
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'avg': 'mean'
-    })
-    ohlc = ohlc.dropna()
-    return ohlc
-
-candles = create_ohlc(concurrent, CANDLE_TIMEFRAME)
-print(f"Generated {len(candles)} candles at {args.timeframe} timeframe")
+concurrent_raw = concurrent_raw.sort_index()
+print(f"   Raw data points: {len(concurrent_raw):,}")
 
 # ==========================
-# METRICS
+# RESAMPLE TO SELECTED TIMEFRAME
 # ==========================
-all_slots = concurrent["concurrent_slots"]
-avg_slots = all_slots.mean()
-p50 = np.percentile(all_slots, 50)
-p90 = np.percentile(all_slots, 90)
-p95 = np.percentile(all_slots, 95)
-p98 = np.percentile(all_slots, 98)
-p99 = np.percentile(all_slots, 99)
-peak = all_slots.max()
-min_slots = all_slots.min()
+print(f"\n🕯️  Resampling to {args.timeframe}...")
+
+# Create OHLC candles for the candlestick chart
+candles = concurrent_raw.resample(CANDLE_TIMEFRAME).agg(
+    open='first',
+    high='max', 
+    low='min',
+    close='last',
+    avg='mean',
+    count='count'
+).dropna()
+
+# Get the AVERAGE slots per candle period (this is what we use for metrics)
+# This represents "average concurrent slots during each [timeframe] period"
+resampled_slots = candles['avg']
+
+print(f"   Generated: {len(candles)} candles")
 
 # ==========================
-# TECHNICAL OUTPUT
+# METRICS FOR SELECTED TIMEFRAME
+# ==========================
+# These are calculated from the RESAMPLED data (avg per period)
+avg_slots = resampled_slots.mean()
+p50 = np.percentile(resampled_slots, 50)
+p90 = np.percentile(resampled_slots, 90)
+p95 = np.percentile(resampled_slots, 95)
+p98 = np.percentile(resampled_slots, 98)
+p99 = np.percentile(resampled_slots, 99)
+peak = resampled_slots.max()
+min_slots = resampled_slots.min()
+
+# Also get peak from HIGH values (true max in any candle)
+peak_high = candles['high'].max()
+
+print(f"\n📊 Metrics for {args.timeframe} timeframe:")
+print(f"   (Based on average slots per {args.timeframe} period)")
+
+# ==========================
+# CONSOLE OUTPUT
 # ==========================
 print("\n" + "-"*70)
-print("METRICS SUMMARY")
+print(f"PERCENTILE SUMMARY ({args.timeframe} timeframe)")
 print("-"*70)
 print(f"  Minimum:  {min_slots:>10.1f} slots")
 print(f"  p50:      {p50:>10.1f} slots")
@@ -130,104 +136,53 @@ print(f"  p90:      {p90:>10.1f} slots")
 print(f"  p95:      {p95:>10.1f} slots")
 print(f"  p98:      {p98:>10.1f} slots")
 print(f"  p99:      {p99:>10.1f} slots")
-print(f"  Peak:     {peak:>10.1f} slots")
+print(f"  Peak Avg: {peak:>10.1f} slots (highest avg in a {args.timeframe} period)")
+print(f"  Peak Max: {peak_high:>10.1f} slots (absolute max in any second)")
 
 # ==========================
 # GRAPH FUNCTIONS
 # ==========================
 
-def plot_candlestick(ax, ohlc_data, title):
+def plot_candlestick(ax, ohlc_data, timeframe_label):
     """Plot stock-market style candlestick chart"""
-    width = 0.6  # candle width
+    n_candles = len(ohlc_data)
     
-    # Calculate width based on time difference
-    if len(ohlc_data) > 1:
-        time_diff = (ohlc_data.index[1] - ohlc_data.index[0]).total_seconds()
-        width_td = pd.Timedelta(seconds=time_diff * 0.8)
-    else:
-        width_td = pd.Timedelta(hours=1)
-    
-    for idx, (time_idx, row) in enumerate(ohlc_data.iterrows()):
-        open_val = row['open']
-        close_val = row['close']
-        high_val = row['high']
-        low_val = row['low']
+    for i, (time_idx, row) in enumerate(ohlc_data.iterrows()):
+        o, h, l, c = row['open'], row['high'], row['low'], row['close']
         
-        # Color: green if close >= open, red if close < open
-        if close_val >= open_val:
-            color = '#26a69a'  # Green
-            body_bottom = open_val
-            body_height = close_val - open_val
-        else:
-            color = '#ef5350'  # Red
-            body_bottom = close_val
-            body_height = open_val - close_val
+        # Color based on close vs open
+        color = '#26a69a' if c >= o else '#ef5350'  # Green / Red
         
         # Draw wick (high-low line)
-        ax.plot([time_idx, time_idx], [low_val, high_val], 
-                color=color, linewidth=1, zorder=1)
+        ax.plot([i, i], [l, h], color=color, linewidth=1, zorder=1)
         
-        # Draw body (open-close rectangle)
-        body_height = max(body_height, peak * 0.005)  # Min height for visibility
-        rect = Rectangle(
-            (mdates.date2num(time_idx) - mdates.date2num(time_idx + width_td)/2 + mdates.date2num(time_idx)/2, 
-             body_bottom),
-            width_td.total_seconds() / 86400,  # Convert to days for matplotlib
-            body_height,
-            facecolor=color,
-            edgecolor=color,
-            zorder=2
-        )
-        ax.add_patch(rect)
+        # Draw body (open-close bar)
+        body_bottom = min(o, c)
+        body_height = max(abs(c - o), peak_high * 0.005)  # Min height for visibility
+        ax.bar(i, body_height, bottom=body_bottom, width=0.8, 
+               color=color, edgecolor=color, zorder=2)
     
-    # Add percentile lines
-    ax.axhline(avg_slots, color='blue', linestyle='-', linewidth=2, label=f'Avg = {avg_slots:.0f}', alpha=0.8)
-    ax.axhline(p50, color='green', linestyle='--', linewidth=1.5, label=f'p50 = {p50:.0f}', alpha=0.8)
-    ax.axhline(p90, color='orange', linestyle='--', linewidth=1.5, label=f'p90 = {p90:.0f}', alpha=0.8)
-    ax.axhline(p95, color='red', linestyle='--', linewidth=2, label=f'p95 = {p95:.0f}', alpha=0.8)
-    ax.axhline(p99, color='darkred', linestyle=':', linewidth=1.5, label=f'p99 = {p99:.0f}', alpha=0.8)
+    # Percentile reference lines (from resampled data)
+    ax.axhline(avg_slots, color='blue', linestyle='-', linewidth=2, 
+               label=f'Avg = {avg_slots:.0f}', alpha=0.8)
+    ax.axhline(p50, color='green', linestyle='--', linewidth=1.5, 
+               label=f'p50 = {p50:.0f}', alpha=0.8)
+    ax.axhline(p90, color='orange', linestyle='--', linewidth=1.5, 
+               label=f'p90 = {p90:.0f}', alpha=0.8)
+    ax.axhline(p95, color='red', linestyle='--', linewidth=2, 
+               label=f'p95 = {p95:.0f}', alpha=0.8)
+    ax.axhline(p99, color='darkred', linestyle=':', linewidth=1.5, 
+               label=f'p99 = {p99:.0f}', alpha=0.8)
     
-    ax.set_title(title, fontsize=12, fontweight='bold')
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Slots")
-    ax.legend(loc='upper right', fontsize=8)
-    ax.grid(alpha=0.3)
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-
-
-def plot_simplified_candlestick(ax, ohlc_data, title):
-    """Simplified candlestick using bar chart with error bars for high/low"""
-    times = range(len(ohlc_data))
-    
-    colors = ['#26a69a' if row['close'] >= row['open'] else '#ef5350' 
-              for _, row in ohlc_data.iterrows()]
-    
-    # Plot as bars with the body (open to close)
-    bottoms = [min(row['open'], row['close']) for _, row in ohlc_data.iterrows()]
-    heights = [abs(row['close'] - row['open']) for _, row in ohlc_data.iterrows()]
-    heights = [max(h, peak * 0.01) for h in heights]  # Min height
-    
-    ax.bar(times, heights, bottom=bottoms, color=colors, width=0.8, zorder=2)
-    
-    # Plot wicks
-    for i, (_, row) in enumerate(ohlc_data.iterrows()):
-        ax.plot([i, i], [row['low'], row['high']], color='black', linewidth=0.8, zorder=1)
-    
-    # Percentile lines
-    ax.axhline(avg_slots, color='blue', linestyle='-', linewidth=2, label=f'Avg = {avg_slots:.0f}')
-    ax.axhline(p50, color='green', linestyle='--', linewidth=1.5, label=f'p50 = {p50:.0f}')
-    ax.axhline(p90, color='orange', linestyle='--', linewidth=1.5, label=f'p90 = {p90:.0f}')
-    ax.axhline(p95, color='red', linestyle='--', linewidth=2, label=f'p95 = {p95:.0f}')
-    ax.axhline(p99, color='darkred', linestyle=':', linewidth=1.5, label=f'p99 = {p99:.0f}')
-    
-    # X-axis labels (show subset)
-    step = max(1, len(ohlc_data) // 10)
-    ax.set_xticks(times[::step])
+    # X-axis labels
+    step = max(1, n_candles // 12)
+    ax.set_xticks(list(range(n_candles))[::step])
     ax.set_xticklabels([t.strftime('%m-%d %H:%M') for t in ohlc_data.index[::step]], 
                        rotation=45, ha='right', fontsize=8)
     
-    ax.set_title(title, fontsize=12, fontweight='bold')
+    ax.set_title(f"Candlestick Chart ({timeframe_label}, n={n_candles})\n"
+                 f"🟢 Close ≥ Open | 🔴 Close < Open", 
+                 fontsize=12, fontweight='bold')
     ax.set_xlabel("Time")
     ax.set_ylabel("Slots")
     ax.legend(loc='upper right', fontsize=8)
@@ -238,14 +193,16 @@ def plot_simplified_candlestick(ax, ohlc_data, title):
 # CREATE DASHBOARD
 # ==========================
 fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+fig.suptitle(f"BigQuery Slot Analysis - {args.timeframe} Timeframe", fontsize=14, fontweight='bold')
 
-# Graph 1: Candlestick Chart (Stock Market Style)
+# Graph 1: Candlestick Chart
 ax1 = axes[0, 0]
-plot_simplified_candlestick(ax1, candles, f"Slot Usage Candlestick Chart ({args.timeframe} candles)\n🟢 Close ≥ Open | 🔴 Close < Open")
+plot_candlestick(ax1, candles, args.timeframe)
 
-# Graph 2: Distribution Histogram
+# Graph 2: Distribution Histogram (from resampled data)
 ax2 = axes[0, 1]
-ax2.hist(all_slots, bins=50, alpha=0.7, color='steelblue', edgecolor='white')
+ax2.hist(resampled_slots.values, bins=min(50, len(resampled_slots)), 
+         alpha=0.7, color='steelblue', edgecolor='white')
 ax2.axvline(avg_slots, color='blue', linestyle='-', linewidth=2, label=f'Avg = {avg_slots:.0f}')
 ax2.axvline(p50, color='green', linestyle='--', linewidth=2, label=f'p50 = {p50:.0f}')
 ax2.axvline(p90, color='orange', linestyle='--', linewidth=2, label=f'p90 = {p90:.0f}')
@@ -253,21 +210,23 @@ ax2.axvline(p95, color='red', linestyle='--', linewidth=2, label=f'p95 = {p95:.0
 ax2.axvline(p98, color='purple', linestyle='--', linewidth=1.5, label=f'p98 = {p98:.0f}')
 ax2.axvline(p99, color='darkred', linestyle=':', linewidth=2, label=f'p99 = {p99:.0f}')
 
-ax2.set_title("Distribution of Slot Usage\n(Frequency at each usage level)", fontsize=12, fontweight='bold')
-ax2.set_xlabel("Concurrent Slots")
+ax2.set_title(f"Distribution of Slot Usage ({args.timeframe} averages)\n"
+              f"(n={len(resampled_slots)} periods)", 
+              fontsize=12, fontweight='bold')
+ax2.set_xlabel("Avg Concurrent Slots per Period")
 ax2.set_ylabel("Frequency")
 ax2.legend(loc='upper right', fontsize=8)
 ax2.grid(alpha=0.3)
 
-# Graph 3: SORTED ASCENDING with Percentile Lines (NEW!)
+# Graph 3: SORTED ASCENDING with Percentile Lines
 ax3 = axes[1, 0]
-sorted_slots = np.sort(all_slots.values)
+sorted_slots = np.sort(resampled_slots.values)
 x_pct = np.linspace(0, 100, len(sorted_slots))
 
 ax3.fill_between(x_pct, sorted_slots, alpha=0.3, color='blue')
 ax3.plot(x_pct, sorted_slots, linewidth=1, color='blue')
 
-# Mark percentiles on the curve
+# Mark percentiles
 percentiles = [
     (50, p50, 'green', 'p50'),
     (90, p90, 'orange', 'p90'),
@@ -280,35 +239,43 @@ for pct, val, color, label in percentiles:
     ax3.axhline(val, color=color, linestyle='--', linewidth=1.5, alpha=0.7)
     ax3.axvline(pct, color=color, linestyle=':', linewidth=1, alpha=0.5)
     ax3.scatter([pct], [val], color=color, s=100, zorder=5)
-    ax3.annotate(f'{label}\n{val:.0f} slots', (pct, val), 
+    ax3.annotate(f'{label}\n{val:.0f}', (pct, val), 
                  textcoords="offset points", xytext=(10, 10),
                  fontsize=9, color=color, fontweight='bold')
 
 ax3.axhline(avg_slots, color='blue', linestyle='-', linewidth=2, label=f'Avg = {avg_slots:.0f}')
 
-ax3.set_title("Slot Usage Sorted (Ascending)\n(X-axis = % of time, Y-axis = Slots used)", fontsize=12, fontweight='bold')
-ax3.set_xlabel("Percentile (% of time below this value)")
-ax3.set_ylabel("Concurrent Slots")
+ax3.set_title(f"Sorted Slot Usage ({args.timeframe})\n"
+              f"X = % of {args.timeframe} periods, Y = Avg Slots", 
+              fontsize=12, fontweight='bold')
+ax3.set_xlabel(f"Percentile (% of {args.timeframe} periods below)")
+ax3.set_ylabel("Avg Concurrent Slots")
 ax3.set_xlim(0, 100)
-ax3.set_ylim(0, peak * 1.05)
+ax3.set_ylim(0, peak * 1.1)
 ax3.legend(loc='upper left', fontsize=8)
 ax3.grid(alpha=0.3)
 
-# Graph 4: 24-Hour Profile
+# Graph 4: 24-Hour Profile (using resampled data)
 ax4 = axes[1, 1]
-concurrent_reset = concurrent.reset_index()
-concurrent_reset["hour"] = concurrent_reset["time"].dt.hour
-hourly_avg = concurrent_reset.groupby("hour")["concurrent_slots"].mean()
-hourly_p95 = concurrent_reset.groupby("hour")["concurrent_slots"].quantile(0.95)
-hourly_p99 = concurrent_reset.groupby("hour")["concurrent_slots"].quantile(0.99)
+candles_reset = candles.reset_index()
+candles_reset.columns = ['time', 'open', 'high', 'low', 'close', 'avg', 'count']
+candles_reset["hour"] = candles_reset["time"].dt.hour
+
+hourly_avg = candles_reset.groupby("hour")["avg"].mean()
+hourly_p95 = candles_reset.groupby("hour")["avg"].quantile(0.95)
+hourly_max = candles_reset.groupby("hour")["high"].max()
 
 ax4.fill_between(hourly_avg.index, hourly_avg.values, alpha=0.3, color='blue')
-ax4.plot(hourly_avg.index, hourly_avg.values, linewidth=2, color='blue', marker='o', label='Avg per Hour')
-ax4.plot(hourly_p95.index, hourly_p95.values, linewidth=2, color='red', marker='s', linestyle='--', label='p95 per Hour')
-ax4.plot(hourly_p99.index, hourly_p99.values, linewidth=1.5, color='darkred', marker='^', linestyle=':', label='p99 per Hour')
+ax4.plot(hourly_avg.index, hourly_avg.values, linewidth=2, color='blue', 
+         marker='o', label='Avg per Hour')
+ax4.plot(hourly_p95.index, hourly_p95.values, linewidth=2, color='red', 
+         marker='s', linestyle='--', label='p95 per Hour')
+ax4.plot(hourly_max.index, hourly_max.values, linewidth=1.5, color='darkred', 
+         marker='^', linestyle=':', label='Max per Hour')
 ax4.axhline(avg_slots, color='blue', linestyle='-', linewidth=1, alpha=0.5)
 
-ax4.set_title("24-Hour Usage Profile\n(Hourly patterns)", fontsize=12, fontweight='bold')
+ax4.set_title(f"24-Hour Usage Profile ({args.timeframe})\n(Hourly patterns)", 
+              fontsize=12, fontweight='bold')
 ax4.set_xlabel("Hour of Day (0-23)")
 ax4.set_ylabel("Concurrent Slots")
 ax4.set_xticks(range(0, 24))
@@ -316,38 +283,40 @@ ax4.legend(loc='upper right', fontsize=8)
 ax4.grid(alpha=0.3)
 
 plt.tight_layout()
-plt.savefig(f"{OUTPUT_PREFIX}_dashboard_{args.timeframe}.png", dpi=150, bbox_inches='tight')
-print(f"\n✅ Saved: {OUTPUT_PREFIX}_dashboard_{args.timeframe}.png")
+output_file = f"{OUTPUT_PREFIX}_dashboard_{args.timeframe}.png"
+plt.savefig(output_file, dpi=150, bbox_inches='tight')
+print(f"\n✅ Saved: {output_file}")
 plt.show()
 
 # ==========================
 # SUMMARY
 # ==========================
 print("\n" + "="*70)
-print("RECOMMENDATION SUMMARY")
+print(f"RECOMMENDATION SUMMARY ({args.timeframe} timeframe)")
 print("="*70)
 print(f"""
 ┌─────────────────┬─────────────┬────────────────────────────────────────┐
-│ Percentile      │ Slots       │ Interpretation                         │
+│ Metric          │ Slots       │ Interpretation                         │
 ├─────────────────┼─────────────┼────────────────────────────────────────┤
-│ p50 (Median)    │ {p50:>8.0f}    │ 50% of time below this                 │
+│ p50 (Median)    │ {p50:>8.0f}    │ 50% of {args.timeframe} periods below this         │
 │ Average         │ {avg_slots:>8.0f}    │ Mean usage (RESERVE target)            │
-│ p90             │ {p90:>8.0f}    │ 90% of time below this                 │
-│ p95             │ {p95:>8.0f}    │ 95% of time below this (FLEX target)   │
-│ p98             │ {p98:>8.0f}    │ 98% of time below this                 │
-│ p99             │ {p99:>8.0f}    │ 99% of time below this                 │
-│ Peak            │ {peak:>8.0f}    │ Maximum observed                       │
+│ p90             │ {p90:>8.0f}    │ 90% of {args.timeframe} periods below this         │
+│ p95             │ {p95:>8.0f}    │ 95% of {args.timeframe} periods below this         │
+│ p98             │ {p98:>8.0f}    │ 98% of {args.timeframe} periods below this         │
+│ p99             │ {p99:>8.0f}    │ 99% of {args.timeframe} periods below this         │
+│ Peak (avg)      │ {peak:>8.0f}    │ Highest avg in a {args.timeframe} period           │
+│ Peak (max)      │ {peak_high:>8.0f}    │ Absolute max slot usage                │
 └─────────────────┴─────────────┴────────────────────────────────────────┘
 
-PRICING STRATEGY:
-  📦 RESERVED: {avg_slots:.0f} slots (baseline, always running)
-  ⚡ FLEX:     Up to {p95:.0f} slots (for peak hours)
-  💰 ON-DEMAND: Above {p95:.0f} slots (rare spikes, ~5% of time)
+PRICING STRATEGY (based on {args.timeframe} analysis):
+  📦 RESERVED: {avg_slots:.0f} slots (baseline)
+  ⚡ FLEX:     Up to {p95:.0f} slots (for peak periods)
+  💰 ON-DEMAND: Above {p95:.0f} slots (~5% of time)
 
 USAGE: 
-  python slot_analysis.py --timeframe 15min
-  python slot_analysis.py -t 4h
-  python slot_analysis.py -t 1d
-  
-OPTIONS: 1s, 1min, 15min, 1h, 4h, 1d, 7d
+  python slot_analysis.py -t 1s      # 1-second granularity
+  python slot_analysis.py -t 15min   # 15-minute periods
+  python slot_analysis.py -t 4h      # 4-hour periods
+  python slot_analysis.py -t 1d      # Daily analysis
+  python slot_analysis.py -t 7d      # Weekly analysis
 """)
