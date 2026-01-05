@@ -1,150 +1,59 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 
-# =========================================================
-# 1. LOAD DATA (3 FILES)
-# =========================================================
+# =========================
+# CONFIG
+# =========================
+CSV_FILE = "queries_timeline.csv"
+OUTPUT_FILE = "monthly_slot_metrics.csv"
 
-files = {
-    'procs': 'procs.csv',
-    'user_fired': 'user_fired.csv',
-    'sa_non_proc': 'sa_non_proc.csv'
-}
+# =========================
+# LOAD DATA
+# =========================
+df = pd.read_csv(CSV_FILE)
 
-dfs = []
-for qtype, path in files.items():
-    df = pd.read_csv(path)
-    df['query_type'] = qtype
-    dfs.append(df)
+df["period_start"] = pd.to_datetime(df["period_start"])
+df["month"] = df["period_start"].dt.to_period("M")
 
-df = pd.concat(dfs, ignore_index=True)
+# =========================
+# MONTHLY AGGREGATION
+# =========================
+monthly = []
 
-# Convert to datetime
-df['start_time'] = pd.to_datetime(df['start_time'])
-df['end_time'] = pd.to_datetime(df['end_time'])
+for month, g in df.groupby("month"):
+    slots = g["concurrent_slots"]
+    bytes_sec = g["bytes_billed_per_second"]
 
-# Duration & average slot rate
-df['duration_seconds'] = (
-    df['end_time'] - df['start_time']
-).dt.total_seconds().clip(lower=1)
+    monthly.append({
+        "month": str(month),
 
-df['slots_per_second'] = df['slot_seconds'] / df['duration_seconds']
+        # SLOT METRICS
+        "slots_min": slots.min(),
+        "slots_p50": np.percentile(slots, 50),
+        "slots_avg": slots.mean(),
+        "slots_p75": np.percentile(slots, 75),
+        "slots_p90": np.percentile(slots, 90),
+        "slots_p95": np.percentile(slots, 95),
+        "slots_p99": np.percentile(slots, 99),
+        "slots_max": slots.max(),
 
-print(f"Loaded {len(df):,} queries")
-print(f"Time range: {df['start_time'].min()} → {df['end_time'].max()}")
+        # BYTES METRICS
+        "avg_bytes_per_sec": bytes_sec.mean(),
+        "total_bytes_billed": bytes_sec.sum(),
 
-# =========================================================
-# 2. BUILD CONCURRENT SLOT TIMELINE (5-MIN RESOLUTION)
-# =========================================================
+        # RELATIONSHIP METRIC (for equation fitting)
+        "slot_bytes_corr": slots.corr(bytes_sec),
 
-def compute_concurrency(df, freq='5min'):
-    start = df['start_time'].min().floor(freq)
-    end = df['end_time'].max().ceil(freq)
+        # VOLUME
+        "seconds_observed": len(g)
+    })
 
-    timeline = pd.date_range(start, end, freq=freq)
-    rows = []
+monthly_df = pd.DataFrame(monthly)
 
-    for t0, t1 in zip(timeline[:-1], timeline[1:]):
-        running = df[
-            (df['start_time'] < t1) &
-            (df['end_time'] > t0)
-        ]
+# =========================
+# SAVE
+# =========================
+monthly_df.to_csv(OUTPUT_FILE, index=False)
 
-        rows.append({
-            'time': t0 + (t1 - t0)/2,
-            'total_slots': running['slots_per_second'].sum(),
-            'procs': running.loc[running['query_type']=='procs','slots_per_second'].sum(),
-            'user_fired': running.loc[running['query_type']=='user_fired','slots_per_second'].sum(),
-            'sa_non_proc': running.loc[running['query_type']=='sa_non_proc','slots_per_second'].sum(),
-            'query_count': len(running)
-        })
-
-    return pd.DataFrame(rows)
-
-timeline = compute_concurrency(df, freq='5min')
-
-# =========================================================
-# 3. PEAK CONCURRENT SLOT USAGE
-# =========================================================
-
-peak = timeline.loc[timeline['total_slots'].idxmax()]
-
-print("\n" + "="*60)
-print("PEAK CONCURRENT SLOT USAGE")
-print("="*60)
-print(f"Time                : {peak['time']}")
-print(f"Total slots         : {peak['total_slots']:.2f}")
-print(f"Concurrent queries  : {int(peak['query_count'])}")
-print("="*60)
-
-# =========================================================
-# 4. 24-HOUR AVERAGE PROFILE (CLEAN VIEW)
-# =========================================================
-
-timeline['hour'] = timeline['time'].dt.hour
-
-hourly_avg = (
-    timeline
-    .groupby('hour')[['total_slots','procs','user_fired','sa_non_proc']]
-    .mean()
-    .reset_index()
-)
-
-# =========================================================
-# 5. PLOTS
-# =========================================================
-
-# --- A. Full timeline with peak marker ---
-plt.figure(figsize=(16,6))
-plt.plot(timeline['time'], timeline['total_slots'], label='Total Slots', linewidth=1.5)
-
-plt.scatter(
-    peak['time'],
-    peak['total_slots'],
-    color='red',
-    zorder=5,
-    label=f"Peak {peak['total_slots']:.1f} slots"
-)
-
-plt.title('Concurrent BigQuery Slot Usage – 30 Days')
-plt.xlabel('Time')
-plt.ylabel('Concurrent Slots')
-plt.legend()
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-# --- B. Average 24-hour day (stacked) ---
-plt.figure(figsize=(14,6))
-
-plt.stackplot(
-    hourly_avg['hour'],
-    hourly_avg['procs'],
-    hourly_avg['sa_non_proc'],
-    hourly_avg['user_fired'],
-    labels=['procs','sa_non_proc','user_fired'],
-    alpha=0.85
-)
-
-plt.xlabel('Hour of Day (0–23)')
-plt.ylabel('Average Concurrent Slots')
-plt.title('Average BigQuery Slot Usage – 24 Hour Profile (30 Days)')
-plt.xticks(range(24))
-plt.legend(loc='upper left')
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.show()
-
-# =========================================================
-# 6. SUMMARY STATS
-# =========================================================
-
-print("\n" + "="*60)
-print("SUMMARY STATISTICS")
-print("="*60)
-print(f"Average concurrent slots : {timeline['total_slots'].mean():.2f}")
-print(f"Median concurrent slots  : {timeline['total_slots'].median():.2f}")
-print(f"P90 concurrent slots     : {timeline['total_slots'].quantile(0.90):.2f}")
-print(f"P95 concurrent slots     : {timeline['total_slots'].quantile(0.95):.2f}")
-print("="*60)
+print("✅ Monthly metrics saved:", OUTPUT_FILE)
+print(monthly_df.head())
