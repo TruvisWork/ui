@@ -97,3 +97,36 @@ resource "local_file" "vm_sa_key_file" {
   filename = "${var.vm_sa_file}"
 }
 
+
+
+
+
+Pre-requisites for HSBC AWS project
+1. Network and Architecture diagram/topology
+pg_stat and pgstattuple extensions should exist, if not then it should be created before access is
+granted
+2.
+3. Confirmation on monitoring tool in use - CloudWatch/Grafana or anything else
+4. Read-only access for reading the metadata (set-up group with all the required policies)
+5. Performance Insights enabled for all resources (wherever applicable).
+6. Instance class in use - ServerlessV2 or any other instance type
+7. Pricing model (discounted or not from AWS)
+8. Version in use for DocumentDB and Aurora DB
+9. Data size in test/prod-like/prod environments
+10. Hourly granularity to be turned on for billing
+11. DataVisa restrictions for using prod data in "prod like/test" env
+12. Current storage size and average monthly growth
+13. Caching already in place? if yes then which one -
+app level? •
+CDN (CloudFront) in use? •
+Redis/ Valkey elasticache? •
+14. ProxySQL/PGBouncer allowed (or any other equivalent) for connection pooling?
+15. Resource Level Data enabled in Cost Explorer?
+16. Trusted Advisor enabled already?
+AWS access to be granted via IAM service account and/or service groups (with required accounts added
+under the group with access policies attached)
+17.
+Profiler (for DocumentDB) - Disabled or enabled? If disabled, new parameter group to be created and
+enabled. Modify cluster to use new parameter group and also enable profiler logs in CloudWatch.
+18.
+19. Idle connection issues - are there any measures to handle this issue in Aurora?
